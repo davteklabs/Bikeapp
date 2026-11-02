@@ -40,12 +40,14 @@ export const OVERLAYS = {
 
 /**
  * Water (lakes, reservoirs, rivers, canals, creeks), drawn as sharp vector shapes on
- * top of the faded base map so it stays clearly water. Light sky blue: distinct from
- * the dark "blue" difficulty rating and the blue navigation route.
+ * top of the faded base map. It must stand out by lightness, not only by hue, so it
+ * reads as water for colour-blind users too: a mid-tone cyan-blue, clearly darker than
+ * the faded land, with a wave texture on open water. Cyan leans away from the dark
+ * "blue" difficulty rating and the navigation route colour.
  */
 export const WATER = {
   source: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
-  fill: '#bfe6fa', outline: '#7ccbef', line: '#5bbfe8',
+  fill: '#59b4e8', wave: '#e8f6ff', outline: '#1d8fd1', line: '#1499d6',
 };
 
 /**

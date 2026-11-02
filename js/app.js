@@ -136,7 +136,10 @@ const map = (() => {
         // seasonal ones paler or dashed. Culverts (tunnels) aren't drawn.
         { id: 'water', source: 'water', 'source-layer': 'water', type: 'fill',
           filter: ['all', ['!=', ['get', 'class'], 'swimming_pool'], ['!=', ['get', 'brunnel'], 'tunnel']],
-          paint: { 'fill-color': WATER.fill, 'fill-outline-color': WATER.outline, 'fill-opacity': ['case', ['==', ['get', 'intermittent'], 1], 0.5, 0.95] } },
+          paint: { 'fill-pattern': 'water-waves', 'fill-opacity': ['case', ['==', ['get', 'intermittent'], 1], 0.55, 1] } },
+        { id: 'water-edge', source: 'water', 'source-layer': 'water', type: 'line',
+          filter: ['all', ['!=', ['get', 'class'], 'swimming_pool'], ['!=', ['get', 'brunnel'], 'tunnel']],
+          paint: { 'line-color': WATER.outline, 'line-width': 1 } },
         ...[['waterway', ['!=', ['get', 'intermittent'], 1], {}], ['waterway-seasonal', ['==', ['get', 'intermittent'], 1], { 'line-dasharray': [2, 2] }]]
           .map(([id, seasonal, extra]) => ({
             id, source: 'water', 'source-layer': 'waterway', type: 'line', minzoom: 8,
@@ -191,6 +194,25 @@ const map = (() => {
   });
 })();
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+
+// Wave texture for open water, so lakes read as water whatever colours you see.
+map.on('styleimagemissing', (e) => {
+  if (e.id !== 'water-waves' || map.hasImage('water-waves')) return;
+  const r = 2, w = 24 * r, h = 12 * r;
+  const g = Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d');
+  g.fillStyle = WATER.fill;
+  g.fillRect(0, 0, w, h);
+  g.strokeStyle = WATER.wave;
+  g.globalAlpha = 0.65;
+  g.lineWidth = 1.5 * r;
+  g.beginPath();
+  for (let x = 0; x <= w; x++) {
+    const y = h / 2 + Math.sin((x / w) * 2 * Math.PI) * h * 0.22;
+    if (x) g.lineTo(x, y); else g.moveTo(x, y);
+  }
+  g.stroke();
+  map.addImage('water-waves', g.getImageData(0, 0, w, h), { pixelRatio: r });
+});
 
 // Sources and layers only exist once the style has loaded; queue work until then.
 let mapReady = false;

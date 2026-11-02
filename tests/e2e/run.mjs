@@ -96,9 +96,12 @@ try {
   await page.goto(`http://localhost:${port}/`);
   await page.waitForSelector('.me-marker', { timeout: 10000 });
   ok('map loads and shows GPS position');
-  const water = await page.evaluate(() => ['water', 'waterway', 'waterway-seasonal'].map((id) => window.trailnav.map.getLayer(id) && window.trailnav.map.getPaintProperty(id, id === 'water' ? 'fill-color' : 'line-color')));
-  assert.deepEqual(water, ['#bfe6fa', '#5bbfe8', '#5bbfe8']);
-  ok('water layers: lakes filled and rivers/canals drawn in light blue');
+  const water = await page.evaluate(() => {
+    const m = window.trailnav.map;
+    return [m.getPaintProperty('water', 'fill-pattern'), m.getPaintProperty('waterway', 'line-color'), m.getPaintProperty('waterway-seasonal', 'line-color')];
+  });
+  assert.deepEqual(water, ['water-waves', '#1499d6', '#1499d6']);
+  ok('water layers: lakes with a wave texture, rivers/canals in blue');
   await snap(page, '1-map');
 
   const segProps = () => page.evaluate(() => Object.fromEntries(
