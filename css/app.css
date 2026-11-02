@@ -137,13 +137,20 @@ body.navigating #topbar { display: none; }
 .me-marker { width: 26px; height: 26px; }
 .me-marker .dot { position: absolute; inset: 5px; border-radius: 50%; background: var(--route); border: 3px solid #fff; box-shadow: 0 0 6px rgba(0,0,0,.4); }
 .me-marker .cone { position: absolute; left: 50%; top: 50%; width: 0; height: 0; margin-left: -9px; margin-top: -28px;
-  border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 18px solid var(--route);
-  transform-origin: 9px 28px; opacity: .85; }
+  border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 18px solid var(--route); opacity: .85; }
+.me-marker.no-heading .cone { display: none; }
+/* While navigating, a flat arrow (like Google Maps) instead of the dot. */
+.me-marker .arrow { display: none; position: absolute; inset: -6px; width: 38px; height: 38px;
+  fill: var(--route); stroke: #fff; stroke-width: 1.5; stroke-linejoin: round; filter: drop-shadow(0 1px 3px rgba(0,0,0,.45)); }
+body.navigating .me-marker .arrow { display: block; }
+body.navigating .me-marker .dot, body.navigating .me-marker .cone { display: none; }
+.pin-marker { width: 32px; height: 42px; }
 .pin-marker svg { width: 32px; height: 42px; filter: drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
-.leaflet-container { font: inherit; background: var(--bg-soft); }
-.leaflet-control-attribution { font-size: 10px; }
-.leaflet-top.leaflet-left { top: calc(var(--safe-top) + 110px); }
-body.navigating .leaflet-top.leaflet-left { display: none; }
+.maplibregl-map { font: inherit; }
+.maplibregl-ctrl-attrib { font-size: 10px; }
+.maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 110px); }
+body.navigating .maplibregl-ctrl-top-left { display: none; }
+.trail-tip .maplibregl-popup-content { padding: 4px 8px; font-weight: 600; color: #1b1f1d; }
 
 #toast { position: fixed; z-index: 1003; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-bottom) + 90px);
   background: #222; color: #fff; padding: 10px 16px; border-radius: 10px; max-width: 90vw; box-shadow: var(--shadow); }

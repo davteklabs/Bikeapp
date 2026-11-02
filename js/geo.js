@@ -84,6 +84,30 @@ export function snapToPolyline(p, coords, cum, from = 0, to = coords.length - 1)
   return best;
 }
 
+/** Point `d` metres along a polyline (clamped to its ends). */
+export function pointAlong(coords, cum, d) {
+  if (d <= 0) return coords[0];
+  if (d >= cum[cum.length - 1]) return coords[coords.length - 1];
+  let lo = 0, hi = cum.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] <= d) lo = mid; else hi = mid;
+  }
+  const t = (d - cum[lo]) / (cum[hi] - cum[lo] || 1);
+  return {
+    lat: coords[lo].lat + (coords[hi].lat - coords[lo].lat) * t,
+    lng: coords[lo].lng + (coords[hi].lng - coords[lo].lng) * t,
+  };
+}
+
+/** Point reached from p after `dist` metres on initial bearing `brg` (degrees). */
+export function destination(p, brg, dist) {
+  const d = dist / R, b = toRad(brg), lat1 = toRad(p.lat), lng1 = toRad(p.lng);
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(b));
+  const lng2 = lng1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+  return { lat: toDeg(lat2), lng: toDeg(lng2) };
+}
+
 /** Index of the polyline vertex closest to p, searching from `start`. */
 export function nearestVertex(p, coords, start = 0) {
   let bestI = start, bestD = Infinity;

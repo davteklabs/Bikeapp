@@ -43,6 +43,7 @@ test('navigator tracks progress, announces turn, and arrives', () => {
     if (t < 0.9) {
       assert.equal(st.stepIndex, 1, `before corner t=${t}`);
       assert.ok(Math.abs(st.distToManeuver - 500 * (1 - t)) < 12, `dist ${st.distToManeuver} at t=${t}`);
+      assert.ok(Math.abs(st.heading - 90) < 1, `heading ${st.heading} at t=${t}`);
     }
   }
   assert.ok(spoken.some((s) => /^In \d+ metres, turn left onto Ridge Trail$/.test(s)), spoken.join(' | '));
@@ -54,6 +55,7 @@ test('navigator tracks progress, announces turn, and arrives', () => {
   for (let t = 0.1; t <= 1.0001; t += 0.1) {
     st = nav.update({ ...lerp(CORNER, END, t), accuracy: 5, speed: 5, timestamp: 0 });
     spoken.push(...st.announcements);
+    if (t > 0.15 && t < 0.85) assert.ok(Math.min(st.heading, 360 - st.heading) < 1, `heading ${st.heading} at t=${t}`);
   }
   assert.equal(st.arrived, true);
   assert.ok(spoken.includes('You have arrived at your destination'));

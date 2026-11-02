@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { haversine, bearing, closestOnSegment, cumulativeDistances, snapToPolyline, angleDiff } from '../js/geo.js';
+import { haversine, bearing, closestOnSegment, cumulativeDistances, snapToPolyline, angleDiff, pointAlong, destination } from '../js/geo.js';
 
 test('haversine: 1 degree of latitude ≈ 111.2 km', () => {
   const d = haversine({ lat: 0, lng: 0 }, { lat: 1, lng: 0 });
@@ -35,4 +35,20 @@ test('snapToPolyline: along-distance accumulates over segments', () => {
 test('angleDiff wraps around north', () => {
   assert.equal(angleDiff(350, 10), 20);
   assert.equal(angleDiff(10, 350), -20);
+});
+
+test('pointAlong interpolates and clamps', () => {
+  const coords = [{ lat: 47, lng: 8 }, { lat: 47, lng: 8.01 }, { lat: 47.01, lng: 8.01 }];
+  const cum = cumulativeDistances(coords);
+  const p = pointAlong(coords, cum, cum[1] + 556);
+  assert.ok(haversine(p, { lat: 47.005, lng: 8.01 }) < 3, JSON.stringify(p));
+  assert.deepEqual(pointAlong(coords, cum, -5), coords[0]);
+  assert.deepEqual(pointAlong(coords, cum, 1e9), coords[2]);
+});
+
+test('destination moves the given distance on the given bearing', () => {
+  const o = { lat: 38.75, lng: -121.17 };
+  const p = destination(o, 90, 1000);
+  assert.ok(Math.abs(haversine(o, p) - 1000) < 0.5);
+  assert.ok(Math.abs(bearing(o, p) - 90) < 0.1);
 });

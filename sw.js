@@ -1,12 +1,12 @@
 // Service worker: offline app shell + a bounded cache of map tiles you've viewed,
 // so the map keeps working when signal drops out on the trail.
-const SHELL = 'trailnav-shell-v1';
+const SHELL = 'trailnav-shell-v2';
 const TILES = 'trailnav-tiles-v1';
 const MAX_TILES = 3000;
 
 const SHELL_FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
-  'vendor/leaflet/leaflet.css', 'vendor/leaflet/leaflet.js',
+  'vendor/maplibre-gl/maplibre-gl.css', 'vendor/maplibre-gl/maplibre-gl.js',
   'js/app.js', 'js/geo.js', 'js/format.js', 'js/instructions.js', 'js/routing.js', 'js/navigator.js',
   'js/recorder.js', 'js/trails.js', 'js/search.js', 'js/layers.js',
 ];

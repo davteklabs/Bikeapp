@@ -20,7 +20,8 @@ const snap = async (page, name) => shots && page.screenshot({ path: `${shots}/${
 
 const server = createServer().listen(0);
 const port = server.address().port;
-const browser = await chromium.launch();
+// The map is WebGL; headless runners have no GPU, so opt in to software rendering.
+const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true,
   permissions: ['geolocation'], geolocation: { latitude: START.lat, longitude: START.lng, accuracy: 5 },
@@ -32,7 +33,7 @@ const calls = { route: 0, search: 0, overpass: 0 };
 await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
   const url = route.request().url();
   const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body), headers: { 'Access-Control-Allow-Origin': '*' } });
-  if (/\.png$/.test(url)) return route.fulfill({ contentType: 'image/png', body: PNG });
+  if (/\.png$/.test(url)) return route.fulfill({ contentType: 'image/png', body: PNG, headers: { 'Access-Control-Allow-Origin': '*' } });
   if (url.includes('routing.openstreetmap.de')) { calls.route++; return json(osrmResponse()); }
   if (url.includes('nominatim') && url.includes('/search')) {
     calls.search++;
@@ -91,6 +92,9 @@ try {
   assert.equal(await page.textContent('#nav-text'), 'Turn left onto Ridge Trail');
   assert.equal(await page.textContent('#nav-dist'), '500 m');
   ok('navigation starts, banner shows next turn');
+  // The route heads east, so the tilted map should face east (bearing 90).
+  await page.waitForFunction(() => window.trailnav.map.getPitch() > 50 && Math.abs(window.trailnav.map.getBearing() - 90) < 5, null, { timeout: 5000 });
+  ok('navigation view tilts and faces the direction of travel');
 
   for (const t of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) await setGPS(lerp(START, CORNER, t));
   const dist = await page.textContent('#nav-dist');
@@ -112,6 +116,8 @@ try {
   await page.waitForSelector('#sheet #gpx');
   assert.match(await page.textContent('#sheet h2'), /arrived/);
   ok('arrival detected, ride summary with GPX export');
+  await page.waitForFunction(() => window.trailnav.map.getPitch() < 1 && Math.abs(window.trailnav.map.getBearing()) < 1, null, { timeout: 5000 });
+  ok('map returns to flat, north-up view after arriving');
   await snap(page, '4-arrived');
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#sheet #gpx')]);
   assert.match(dl.suggestedFilename(), /\.gpx$/);
@@ -120,7 +126,7 @@ try {
 
   await page.click('.mode-toggle [data-mode="hike"]');
   assert.equal(await page.getAttribute('body', 'data-mode'), 'hike');
-  await page.evaluate(() => window.trailnav.map.setZoom(13));
+  await page.evaluate(() => window.trailnav.map.setZoom(12));
   await page.click('#btn-trails');
   await page.waitForSelector('.trail-list li');
   assert.match(await page.textContent('.trail-list li'), /Panorama Loop/);
@@ -129,7 +135,7 @@ try {
   await page.click('.trail-list li');
   await page.waitForSelector('#go-trail');
   await page.waitForTimeout(1000);
-  assert.ok(await page.evaluate(() => window.trailnav.map.getZoom()) >= 15, 'map zooms to selected trail');
+  assert.ok(await page.evaluate(() => window.trailnav.map.getZoom()) >= 14, 'map zooms to selected trail');
   await snap(page, '5-trails');
   await page.click('#go-trail');
   await page.waitForSelector('#btn-start');

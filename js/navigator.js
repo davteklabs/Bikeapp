@@ -2,7 +2,7 @@
 // update() and it tells you where you are on the route, the next maneuver,
 // what to announce, and whether you've gone off-route or arrived.
 
-import { snapToPolyline, haversine } from './geo.js';
+import { snapToPolyline, haversine, bearing, pointAlong } from './geo.js';
 import { spokenDistance } from './format.js';
 
 const MODE_CONFIG = {
@@ -88,6 +88,12 @@ export class Navigator {
     const announcements = this.arrived ? this.arrivalAnnouncement() : offRoute ? [] : this.announce(stepIndex, distToManeuver);
     this.lastStepIndex = stepIndex;
 
+    // Direction of travel along the route, looking a little ahead so the map
+    // turns smoothly into corners instead of following GPS jitter.
+    const here = pointAlong(coords, cum, this.along);
+    const ahead = pointAlong(coords, cum, this.along + 30);
+    const heading = haversine(here, ahead) > 3 ? bearing(here, ahead) : null;
+
     return {
       position: p,
       snapped: snap.point,
@@ -102,6 +108,7 @@ export class Navigator {
       step,
       followingStep: steps[stepIndex + 1] || null,
       distToManeuver,
+      heading,
       speed: fix.speed ?? null,
       arrived: this.arrived,
       announcements,

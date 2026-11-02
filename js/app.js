@@ -1,21 +1,26 @@
-/* global L */
+/* global maplibregl */
 import { BASE_LAYERS, OVERLAYS, MODE_DEFAULTS } from './layers.js';
 import { searchPlaces, reverseGeocode } from './search.js';
 import { fetchRoutes } from './routing.js';
 import { Navigator } from './navigator.js';
 import { TrackRecorder } from './recorder.js';
 import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
-import { haversine, bearing } from './geo.js';
+import { haversine, bearing, destination } from './geo.js';
 import { formatDistance, formatDuration, formatSpeed, formatClock } from './format.js';
 
 // ---------------------------------------------------------------- state ----
 const SETTINGS_KEY = 'trailnav:settings';
 const settings = Object.assign(
-  { mode: 'bike', units: 'imperial', voice: true, base: null, overlays: null, view: null },
+  { mode: 'bike', units: 'imperial', voice: true, base: null, overlays: null, camera: null },
   load(SETTINGS_KEY)
 );
 // Older versions saved the metric default without the user picking it; only keep units they chose.
 if (!settings.unitsChosen) settings.units = 'imperial';
+// Map position saved by the Leaflet version: same centre, but MapLibre zoom levels are one lower.
+if (settings.view && !settings.camera) {
+  settings.camera = { center: [settings.view.center[1], settings.view.center[0]], zoom: settings.view.zoom - 1 };
+}
+delete settings.view;
 
 const state = {
   fix: null,            // latest GPS fix
@@ -32,6 +37,7 @@ const state = {
   recorder: null,
   wakeLock: null,
   trails: [],
+  navHeading: null,     // direction of travel the map faces while navigating
 };
 
 const $ = (s) => document.querySelector(s);
@@ -45,35 +51,94 @@ const els = {
 };
 
 // ------------------------------------------------------------------ map ----
-const map = L.map('map', { zoomControl: true, attributionControl: true, tap: true })
-  .setView(settings.view?.center || [46.5, 8.0], settings.view?.zoom || 5);
-map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
+// MapLibre GL (WebGL) so the map can tilt and turn with you while navigating.
+// Zoom levels are one lower than Leaflet's for the same scale.
+const NAV_ZOOM = 17, NAV_PITCH = 60, CAMERA_MS = 1000;
+const EMPTY = { type: 'FeatureCollection', features: [] };
+const ll = (p) => [p.lng, p.lat];
+const fc = (features) => ({ type: 'FeatureCollection', features });
+const lineFeature = (coords, properties = {}) =>
+  ({ type: 'Feature', properties, geometry: { type: 'LineString', coordinates: coords.map(ll) } });
 
-const baseLayers = {}, overlayLayers = {};
-for (const [k, d] of Object.entries(BASE_LAYERS)) baseLayers[k] = L.tileLayer(d.url, d.options);
-for (const [k, d] of Object.entries(OVERLAYS)) overlayLayers[k] = L.tileLayer(d.url, { ...d.options, zIndex: 5 });
-
-const routePane = map.createPane('routes'); routePane.style.zIndex = 450;
-const trailsLayer = L.layerGroup().addTo(map);
-const routeLayer = L.layerGroup().addTo(map);
-let meMarker = null, accuracyCircle = null, destMarker = null, originMarker = null;
-
-// Leaflet silently ignores view changes requested mid zoom-animation; defer them.
-function fitTo(bounds, opts) {
-  if (map._animatingZoom) map.once('zoomend', () => map.fitBounds(bounds, opts));
-  else map.fitBounds(bounds, opts);
+function rasterSource(d) {
+  const tiles = d.url.includes('{s}') ? [...(d.options.subdomains || 'abc')].map((s) => d.url.replace('{s}', s)) : [d.url];
+  return { type: 'raster', tiles, tileSize: 256, maxzoom: d.options.maxZoom, attribution: d.options.attribution };
 }
+const lineLayer = (id, source, paint, extra = {}) =>
+  ({ id, source, type: 'line', layout: { 'line-join': 'round', 'line-cap': 'round', ...extra.layout }, paint, ...(extra.filter && { filter: extra.filter }) });
 
-function applyLayers() {
+function shownLayers() {
   const defaults = MODE_DEFAULTS[settings.mode];
   const base = settings.base || defaults.base;
   const overlays = settings.overlays || defaults.overlays;
-  for (const [k, l] of Object.entries(baseLayers)) (k === base ? map.addLayer(l) : map.removeLayer(l));
-  for (const [k, l] of Object.entries(overlayLayers)) (overlays.includes(k) ? map.addLayer(l) : map.removeLayer(l));
+  return new Set([`base-${base}`, ...overlays.map((k) => `ov-${k}`)]);
+}
+const visibility = (id, shown) => (shown.has(id) ? 'visible' : 'none');
+
+const map = (() => {
+  const shown = shownLayers();
+  return new maplibregl.Map({
+    container: 'map',
+    center: settings.camera?.center || [8.0, 46.5],
+    zoom: settings.camera?.zoom ?? 4,
+    maxZoom: 19,
+    maxPitch: 70,
+    style: {
+      version: 8,
+      sources: {
+        ...Object.fromEntries(Object.entries(BASE_LAYERS).map(([k, d]) => [`base-${k}`, rasterSource(d)])),
+        ...Object.fromEntries(Object.entries(OVERLAYS).map(([k, d]) => [`ov-${k}`, rasterSource(d)])),
+        trails: { type: 'geojson', data: EMPTY },
+        accuracy: { type: 'geojson', data: EMPTY },
+        routes: { type: 'geojson', data: EMPTY },
+        record: { type: 'geojson', data: EMPTY },
+      },
+      layers: [
+        ...Object.keys(BASE_LAYERS).map((k) => ({ id: `base-${k}`, source: `base-${k}`, type: 'raster', layout: { visibility: visibility(`base-${k}`, shown) } })),
+        ...Object.entries(OVERLAYS).map(([k, d]) => ({ id: `ov-${k}`, source: `ov-${k}`, type: 'raster',
+          layout: { visibility: visibility(`ov-${k}`, shown) }, paint: { 'raster-opacity': d.options.opacity ?? 1 } })),
+        lineLayer('trails', 'trails', {
+          'line-color': ['get', 'color'],
+          'line-width': ['match', ['get', 'look'], 'hl', 7, 4],
+          'line-opacity': ['match', ['get', 'look'], 'dim', 0.35, 0.85],
+        }, { layout: { 'line-sort-key': ['match', ['get', 'look'], 'hl', 1, 0] } }),
+        { id: 'accuracy', source: 'accuracy', type: 'fill', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.1, 'fill-outline-color': '#1a73e8' } },
+        lineLayer('route-alt', 'routes', { 'line-color': '#8aa4c8', 'line-width': 6, 'line-opacity': 0.8 }, { filter: ['==', ['get', 'active'], false] }),
+        lineLayer('route-casing', 'routes', { 'line-color': '#fff', 'line-width': 10, 'line-opacity': 0.9 }, { filter: ['==', ['get', 'active'], true] }),
+        lineLayer('route', 'routes', { 'line-color': '#1a73e8', 'line-width': 6 }, { filter: ['==', ['get', 'active'], true] }),
+        lineLayer('record', 'record', { 'line-color': '#e53935', 'line-width': 4, 'line-opacity': 0.8 }),
+      ],
+    },
+  });
+})();
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+
+// Sources and layers only exist once the style has loaded; queue work until then.
+let mapReady = false;
+const readyQueue = [];
+const whenReady = (fn) => (mapReady ? fn() : readyQueue.push(fn));
+map.once('style.load', () => { mapReady = true; readyQueue.splice(0).forEach((fn) => fn()); });
+const setData = (id, data) => whenReady(() => map.getSource(id).setData(data));
+
+let meMarker = null, destMarker = null, originMarker = null, glide = null;
+
+function fitTo(points, padding) {
+  const bounds = new maplibregl.LngLatBounds();
+  for (const p of points) bounds.extend(ll(p));
+  map.fitBounds(bounds, { padding, maxZoom: 17, linear: true, duration: 600 });
+}
+
+function applyLayers() {
+  whenReady(() => {
+    const shown = shownLayers();
+    for (const k of Object.keys(BASE_LAYERS)) map.setLayoutProperty(`base-${k}`, 'visibility', visibility(`base-${k}`, shown));
+    for (const k of Object.keys(OVERLAYS)) map.setLayoutProperty(`ov-${k}`, 'visibility', visibility(`ov-${k}`, shown));
+  });
 }
 
 map.on('moveend', () => {
-  settings.view = { center: [map.getCenter().lat, map.getCenter().lng], zoom: map.getZoom() };
+  const c = map.getCenter();
+  settings.camera = { center: [c.lng, c.lat], zoom: map.getZoom() };
   save(SETTINGS_KEY, settings);
 });
 map.on('dragstart', () => {
@@ -81,10 +146,40 @@ map.on('dragstart', () => {
   els.recenter.hidden = !(state.nav || state.fix);
 });
 map.on('click', (e) => {
-  if (state.nav) return;
+  if (state.nav || !mapReady) return;
   if (!els.results.hidden) { els.results.hidden = true; return; }
-  showPlace({ lat: e.latlng.lat, lng: e.latlng.lng, name: 'Dropped pin' }, { lookup: true });
+  // Lines are thin, so accept taps a little way off them.
+  const { x, y } = e.point;
+  const hit = map.queryRenderedFeatures([[x - 10, y - 10], [x + 10, y + 10]], { layers: ['route-alt', 'trails'] })[0];
+  if (hit?.layer.id === 'route-alt') { selectRoute(hit.properties.i); return; }
+  if (hit?.layer.id === 'trails') { showTrail(state.trails[hit.properties.i]); return; }
+  showPlace({ lat: e.lngLat.lat, lng: e.lngLat.lng, name: 'Dropped pin' }, { lookup: true });
 });
+
+const trailTip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'trail-tip', offset: 10 });
+whenReady(() => {
+  map.on('mousemove', 'trails', (e) => {
+    map.getCanvas().style.cursor = 'pointer';
+    trailTip.setLngLat(e.lngLat).setText(e.features[0].properties.name).addTo(map);
+  });
+  map.on('mouseleave', 'trails', () => { map.getCanvas().style.cursor = ''; trailTip.remove(); });
+});
+
+/** While navigating: tilted, facing the direction of travel, with you low on the screen. */
+function followCamera(fix, heading) {
+  map.easeTo({
+    center: ll(fix), zoom: Math.max(map.getZoom(), NAV_ZOOM), pitch: NAV_PITCH, bearing: heading ?? map.getBearing(),
+    padding: { top: map.getContainer().clientHeight * 0.45, bottom: 0, left: 0, right: 0 },
+    duration: CAMERA_MS, easing: (t) => t,
+  });
+}
+
+let flattening = false;
+function flatCamera() {
+  flattening = true;
+  map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 800 });
+  map.once('moveend', () => { flattening = false; });
+}
 
 // ------------------------------------------------------------------ GPS ----
 function startGPS() {
@@ -119,42 +214,65 @@ function onFix(pos) {
   const first = !prev;
   state.fix = fix;
   drawMe();
-  if (first && !state.nav && !state.dest) map.setView([fix.lat, fix.lng], Math.max(map.getZoom(), 15));
+  if (first && !state.nav && !state.dest) map.jumpTo({ center: ll(fix), zoom: Math.max(map.getZoom(), 14) });
   if (state.recorder) { state.recorder.add(fix); updateRecordPanel(); }
   if (state.nav) onNavFix(fix);
-  else if (state.following && !first && state.fix) map.panTo([fix.lat, fix.lng], { animate: true });
+  // Panning now would cut short the return to the flat view after navigating.
+  else if (state.following && !first && !flattening) map.panTo(ll(fix));
 }
 
 function drawMe() {
   const f = state.fix; if (!f) return;
-  const ll = [f.lat, f.lng];
+  cancelAnimationFrame(glide);
   if (!meMarker) {
-    meMarker = L.marker(ll, {
-      icon: L.divIcon({ className: 'me-marker', html: '<div class="cone"></div><div class="dot"></div>', iconSize: [26, 26] }),
-      interactive: false, zIndexOffset: 1000, keyboard: false,
-    }).addTo(map);
-    accuracyCircle = L.circle(ll, { radius: f.accuracy, color: '#1a73e8', weight: 1, fillOpacity: 0.1, interactive: false }).addTo(map);
+    const el = document.createElement('div');
+    el.className = 'me-marker';
+    el.innerHTML = '<div class="cone"></div><div class="dot"></div><svg class="arrow" viewBox="0 0 24 24"><path d="M12 2 4.5 20.5 12 16l7.5 4.5z"/></svg>';
+    // Lies flat on the map and turns with it, so it tilts with the navigation view.
+    meMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(ll(f)).addTo(map);
+  } else if (state.nav && state.following) {
+    glideMe(f, CAMERA_MS); // keep pace with the camera instead of jumping ahead of it
   } else {
-    meMarker.setLatLng(ll);
-    accuracyCircle.setLatLng(ll).setRadius(f.accuracy);
+    meMarker.setLngLat(ll(f));
   }
-  const cone = meMarker.getElement()?.querySelector('.cone');
-  if (cone) {
-    cone.style.display = state.heading == null ? 'none' : '';
-    cone.style.transform = `rotate(${state.heading ?? 0}deg)`;
-  }
+  setData('accuracy', f.accuracy ? circle(f, f.accuracy) : EMPTY);
+  pointMe(state.heading);
+}
+
+function pointMe(heading) {
+  if (!meMarker) return;
+  meMarker.getElement().classList.toggle('no-heading', heading == null);
+  meMarker.setRotation(heading ?? 0);
+}
+
+function glideMe(to, ms) {
+  const from = meMarker.getLngLat(), t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - t0) / ms);
+    meMarker.setLngLat([from.lng + (to.lng - from.lng) * t, from.lat + (to.lat - from.lat) * t]);
+    if (t < 1) glide = requestAnimationFrame(step);
+  };
+  glide = requestAnimationFrame(step);
+}
+
+function circle(c, radius) {
+  const ring = [];
+  for (let i = 0; i <= 48; i++) ring.push(ll(destination(c, i * 7.5, radius)));
+  return { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } };
 }
 
 $('#btn-locate').addEventListener('click', () => {
   startGPS();
   state.following = true;
   els.recenter.hidden = true;
-  if (state.fix) map.setView([state.fix.lat, state.fix.lng], Math.max(map.getZoom(), 16));
+  if (state.fix) map.easeTo({ center: ll(state.fix), zoom: Math.max(map.getZoom(), 15) });
   else toast('Finding your location…');
 });
 els.recenter.addEventListener('click', () => {
   state.following = true; els.recenter.hidden = true;
-  if (state.fix) map.setView([state.fix.lat, state.fix.lng], Math.max(map.getZoom(), 17));
+  if (!state.fix) return;
+  if (state.nav) followCamera(state.fix, state.navHeading);
+  else map.easeTo({ center: ll(state.fix), zoom: Math.max(map.getZoom(), 16) });
 });
 
 // --------------------------------------------------------------- search ----
@@ -198,7 +316,7 @@ function renderResults(results) {
     li.querySelector('.sub').textContent = [r.type, r.label].filter(Boolean).join(' · ');
     const pick = () => {
       els.results.hidden = true; els.search.blur();
-      map.setView([r.lat, r.lng], 15);
+      map.jumpTo({ center: ll(r), zoom: 14 });
       showPlace(r);
     };
     li.addEventListener('click', pick);
@@ -225,16 +343,16 @@ els.sheetClose.addEventListener('click', () => {
 });
 
 // --------------------------------------------------------------- places ----
-function pinIcon(color) {
-  return L.divIcon({
-    className: 'pin-marker', iconSize: [32, 42], iconAnchor: [16, 41],
-    html: `<svg viewBox="0 0 32 42"><path fill="${color}" stroke="#fff" stroke-width="2" d="M16 1C7.7 1 1 7.6 1 15.8 1 27 16 41 16 41s15-14 15-25.2C31 7.6 24.3 1 16 1z"/><circle cx="16" cy="16" r="5.5" fill="#fff"/></svg>`,
-  });
+function pinMarker(color, p) {
+  const el = document.createElement('div');
+  el.className = 'pin-marker';
+  el.innerHTML = `<svg viewBox="0 0 32 42"><path fill="${color}" stroke="#fff" stroke-width="2" d="M16 1C7.7 1 1 7.6 1 15.8 1 27 16 41 16 41s15-14 15-25.2C31 7.6 24.3 1 16 1z"/><circle cx="16" cy="16" r="5.5" fill="#fff"/></svg>`;
+  return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(ll(p)).addTo(map);
 }
 
 function setDestMarker(p) {
-  if (destMarker) destMarker.setLatLng([p.lat, p.lng]);
-  else destMarker = L.marker([p.lat, p.lng], { icon: pinIcon('#d93025'), zIndexOffset: 500 }).addTo(map);
+  if (destMarker) destMarker.setLngLat(ll(p));
+  else destMarker = pinMarker('#d93025', p);
 }
 
 async function showPlace(place, { lookup = false } = {}) {
@@ -253,14 +371,14 @@ async function showPlace(place, { lookup = false } = {}) {
     root.querySelector('[data-act="to"]').onclick = () => planRoute({ ...place });
     root.querySelector('[data-act="from"]').onclick = () => {
       state.origin = { ...place };
-      if (originMarker) originMarker.setLatLng([place.lat, place.lng]);
-      else originMarker = L.marker([place.lat, place.lng], { icon: pinIcon('#188038') }).addTo(map);
-      if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+      if (originMarker) originMarker.setLngLat(ll(place));
+      else originMarker = pinMarker('#188038', place);
+      if (destMarker) { destMarker.remove(); destMarker = null; }
       toast('Start set — now tap or search your destination');
       closeSheet();
     };
     root.querySelector('[data-act="trails"]').onclick = () => {
-      map.setView([place.lat, place.lng], Math.max(map.getZoom(), 13));
+      map.jumpTo({ center: ll(place), zoom: Math.max(map.getZoom(), 12) });
       findTrails();
     };
   });
@@ -293,7 +411,7 @@ async function planRoute(dest) {
     state.routes = await fetchRoutes(settings.mode, [origin, dest], { signal: routeCtl.signal });
     state.routeIndex = 0;
     drawRoutes();
-    fitTo(L.latLngBounds(state.routes[0].coords.map((c) => [c.lat, c.lng])), { padding: [40, 40], paddingBottomRight: [0, els.sheet.offsetHeight] });
+    fitTo(state.routes[0].coords, { top: 40, left: 40, right: 40, bottom: els.sheet.offsetHeight + 20 });
     renderRoutePanel(origin, dest);
   } catch (err) {
     if (err.name === 'AbortError') return;
@@ -315,17 +433,11 @@ function waitForFix(ms) {
 }
 
 function drawRoutes() {
-  routeLayer.clearLayers();
-  state.routes.forEach((r, i) => {
-    if (i === state.routeIndex) return;
-    L.polyline(r.coords, { pane: 'routes', color: '#8aa4c8', weight: 6, opacity: 0.8 })
-      .on('click', () => { state.routeIndex = i; drawRoutes(); renderRoutePanel(state.origin, state.dest); })
-      .addTo(routeLayer);
-  });
-  const r = state.routes[state.routeIndex];
-  if (!r) return;
-  L.polyline(r.coords, { pane: 'routes', color: '#fff', weight: 10, opacity: 0.9, interactive: false }).addTo(routeLayer);
-  L.polyline(r.coords, { pane: 'routes', color: '#1a73e8', weight: 6, interactive: false }).addTo(routeLayer);
+  setData('routes', fc(state.routes.map((r, i) => lineFeature(r.coords, { i, active: i === state.routeIndex }))));
+}
+
+function selectRoute(i) {
+  state.routeIndex = i; drawRoutes(); renderRoutePanel(state.origin, state.dest);
 }
 
 function renderRoutePanel(origin, dest) {
@@ -347,33 +459,31 @@ function renderRoutePanel(origin, dest) {
     <ul class="steps" hidden></ul>`, (root) => {
     root.querySelector('.dest-name').textContent = dest.name || 'Destination';
     root.querySelector('.origin-name').textContent = origin?.name || 'My location';
-    root.querySelectorAll('.alt').forEach((b) => (b.onclick = () => {
-      state.routeIndex = +b.dataset.i; drawRoutes(); renderRoutePanel(origin, dest);
-    }));
+    root.querySelectorAll('.alt').forEach((b) => (b.onclick = () => selectRoute(+b.dataset.i)));
     const stepsEl = root.querySelector('.steps');
     stepsEl.innerHTML = r.steps.map((s, i) => `<li data-i="${i}"><span class="maneuver-icon">${iconSvg(s.icon)}</span><span class="t"></span><span class="d">${s.distance ? formatDistance(s.distance, u) : ''}</span></li>`).join('');
     stepsEl.querySelectorAll('li').forEach((li) => {
       const s = r.steps[+li.dataset.i];
       li.querySelector('.t').textContent = s.text;
-      li.onclick = () => map.setView([s.location.lat, s.location.lng], 17);
+      li.onclick = () => map.easeTo({ center: ll(s.location), zoom: 16 });
     });
     root.querySelector('#btn-steps').onclick = () => { stepsEl.hidden = !stepsEl.hidden; };
     root.querySelector('#btn-start').onclick = () => startNavigation();
     root.querySelector('#btn-swap').onclick = () => {
       const from = origin?.name === 'My location' || !state.origin ? { lat: state.fix.lat, lng: state.fix.lng, name: 'My location' } : origin;
       state.origin = { ...dest };
-      if (originMarker) map.removeLayer(originMarker);
-      originMarker = L.marker([dest.lat, dest.lng], { icon: pinIcon('#188038') }).addTo(map);
+      originMarker?.remove();
+      originMarker = pinMarker('#188038', dest);
       planRoute(from);
     };
   });
 }
 
 function clearRoute() {
-  routeLayer.clearLayers();
+  setData('routes', EMPTY);
   state.routes = []; state.dest = null; state.origin = null;
-  if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
-  if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
+  if (destMarker) { destMarker.remove(); destMarker = null; }
+  if (originMarker) { originMarker.remove(); originMarker = null; }
 }
 
 // ----------------------------------------------------------- navigation ----
@@ -384,7 +494,7 @@ async function startNavigation() {
   if (!state.fix) { toast('Waiting for GPS before starting…'); if (!(await waitForFix(20000))) return toast('No GPS signal'); }
   // If the route started somewhere else ("Start here"), get from here to the route start first.
   state.origin = null;
-  if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
+  if (originMarker) { originMarker.remove(); originMarker = null; }
 
   state.nav = new Navigator(route, { mode: settings.mode, units: settings.units });
   state.following = true;
@@ -402,7 +512,10 @@ function onNavFix(fix) {
   const st = state.nav.update(fix);
   renderNav(st);
   for (const a of st.announcements) speak(a);
-  if (state.following) map.setView([fix.lat, fix.lng], Math.max(map.getZoom(), 17), { animate: true });
+  // Face along the route; off it, fall back to the direction you're moving.
+  state.navHeading = st.onRoute && st.heading != null ? st.heading : state.heading;
+  pointMe(state.navHeading);
+  if (state.following) followCamera(fix, state.navHeading);
   els.offroute.hidden = !st.offRoute;
   if (st.offRoute) reroute(fix);
   if (st.arrived) finishNavigation(true);
@@ -448,8 +561,10 @@ function finishNavigation(arrived) {
   document.body.classList.remove('navigating');
   els.banner.hidden = true; els.footer.hidden = true; els.offroute.hidden = true; els.recenter.hidden = true;
   releaseWakeLock();
-  routeLayer.clearLayers();
-  if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+  flatCamera();
+  pointMe(state.heading);
+  setData('routes', EMPTY);
+  if (destMarker) { destMarker.remove(); destMarker = null; }
   state.dest = null; state.routes = [];
   if (state.recorder?.autoStarted) stopRecording({ title: arrived ? '🏁 You have arrived' : 'Navigation ended' });
   else if (arrived) toast('🏁 You have arrived');
@@ -499,7 +614,7 @@ function iconSvg(icon) {
 // --------------------------------------------------------------- trails ----
 let trailCtl = null;
 async function findTrails() {
-  if (map.getZoom() < 10) { toast('Zoom in closer to find trails'); return; }
+  if (map.getZoom() < 9) { toast('Zoom in closer to find trails'); return; }
   const mode = settings.mode;
   openSheet(`<h2>${mode === 'bike' ? 'Bike' : 'Hiking'} trails here</h2><p class="muted">Searching OpenStreetMap…</p>`);
   trailCtl?.abort(); trailCtl = new AbortController();
@@ -514,17 +629,19 @@ async function findTrails() {
   }
 }
 
-const trailColor = (t) => t.colour && /^#?[0-9a-f]{3,6}$|^[a-z]+$/i.test(t.colour) ? t.colour : (t.route === 'mtb' ? '#8e24aa' : t.route === 'bicycle' ? '#1565c0' : '#c62828');
+function trailColor(t) {
+  // OSM colour tags are CSS names or hex, sometimes without the '#'.
+  const c = t.colour && /^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(t.colour) ? `#${t.colour}` : t.colour;
+  if (c && /^#[0-9a-f]{3,6}$|^[a-z]+$/i.test(c) && window.CSS?.supports('color', c)) return c;
+  return t.route === 'mtb' ? '#8e24aa' : t.route === 'bicycle' ? '#1565c0' : '#c62828';
+}
 
 function drawTrails(highlight = null) {
-  trailsLayer.clearLayers();
-  for (const t of state.trails) {
-    const hl = highlight === t;
-    L.polyline(t.lines, { color: trailColor(t), weight: hl ? 7 : 4, opacity: highlight && !hl ? 0.35 : 0.85 })
-      .bindTooltip(t.name, { sticky: true })
-      .on('click', (e) => { L.DomEvent.stopPropagation(e); showTrail(t); })
-      .addTo(trailsLayer);
-  }
+  setData('trails', fc(state.trails.map((t, i) => ({
+    type: 'Feature',
+    properties: { i, name: t.name, color: trailColor(t), look: highlight === t ? 'hl' : highlight ? 'dim' : '' },
+    geometry: { type: 'MultiLineString', coordinates: t.lines.map((line) => line.map(ll)) },
+  }))));
 }
 
 function renderTrailList() {
@@ -553,7 +670,7 @@ function trailMeta(t) {
 
 function showTrail(t) {
   drawTrails(t);
-  fitTo(L.latLngBounds(t.lines.flat().map((p) => [p.lat, p.lng])), { padding: [30, 30] });
+  fitTo(t.lines.flat(), 30);
   openSheet(`
     <h2 class="n"></h2>
     <div class="muted meta"></div>
@@ -589,7 +706,7 @@ function startRecording(auto) {
   startGPS();
   state.recorder = new TrackRecorder();
   state.recorder.autoStarted = auto;
-  state.recordLine = L.polyline([], { color: '#e53935', weight: 4, opacity: 0.8 }).addTo(map);
+  setData('record', EMPTY);
   $('#btn-record').classList.add('recording');
   if (state.fix) state.recorder.add(state.fix);
   if (!auto) toast('Recording started');
@@ -597,7 +714,7 @@ function startRecording(auto) {
 
 function updateRecordPanel() {
   const r = state.recorder;
-  if (state.recordLine && r) state.recordLine.setLatLngs(r.points.map((p) => [p.lat, p.lng]));
+  if (r?.points.length > 1) setData('record', lineFeature(r.points));
 }
 
 function stopRecording({ title = 'Activity recorded' } = {}) {
@@ -624,7 +741,7 @@ function stopRecording({ title = 'Activity recorded' } = {}) {
       download(`${name.replace(/[: ]/g, '-')}.gpx`, r.toGPX(name, settings.mode === 'bike' ? 'cycling' : 'hiking'), 'application/gpx+xml');
     };
     root.querySelector('#discard').onclick = () => {
-      if (state.recordLine) { map.removeLayer(state.recordLine); state.recordLine = null; }
+      setData('record', EMPTY);
       closeSheet();
     };
   });

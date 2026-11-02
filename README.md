@@ -12,7 +12,7 @@ accounts, or API keys.
 | 🗺️ **Trail maps** | Base maps: CyclOSM (bike), OpenTopoMap (hike, with contours), OpenStreetMap. Overlays from Waymarked Trails show signed hiking, cycling and MTB routes worldwide. |
 | 🔎 **Search** | Find places, peaks, parks and trailheads (OpenStreetMap Nominatim). Tap anywhere on the map to drop a pin. |
 | 🧭 **Routing** | Bike-specific and foot-specific routing on OSM paths and tracks, with alternative routes, a step list, reverse, and a custom start point. |
-| 🗣️ **Live navigation** | Big next-turn banner with distance-to-turn, voice prompts timed per activity, "then…" hints for back-to-back turns, ETA, remaining distance and speed. The map follows you and the screen stays on. |
+| 🗣️ **Live navigation** | Google Maps–style tilted view that turns to face your direction of travel, with you low on the screen and the route ahead. Big next-turn banner with distance-to-turn, voice prompts timed per activity, "then…" hints for back-to-back turns, ETA, remaining distance and speed. The screen stays on. |
 | ↩️ **Auto-reroute** | Detects when you leave the route (it takes GPS accuracy into account and needs several bad fixes in a row) and recalculates from where you are. |
 | 🥾 **Trails nearby** | Lists signed trails in the current view with type, ref, length and difficulty. Tap one to highlight it, then get directions to its closest point. |
 | ⏺️ **Track recording** | Records your ride or hike (auto-starts with navigation) with distance, time, moving speed and climb. Export as **GPX** for Strava, Komoot, etc. |
@@ -49,7 +49,7 @@ directions to a trail. Set `SHOTS_DIR=some/dir` to save screenshots.
 
 ```
 index.html, css/app.css    UI shell (mobile-first, light and dark)
-js/app.js                  UI controller: map, GPS, panels, voice, wake lock
+js/app.js                  UI controller: map (MapLibre GL), GPS, panels, voice, wake lock
 js/navigator.js            Navigation engine (pure): snap to route, progress, next maneuver,
                            voice prompt timing, off-route and arrival detection
 js/routing.js              OSRM client + route normalisation
@@ -88,5 +88,4 @@ URL constant, so swapping is a small change:
 - Elevation profiles and climb-aware routing (BRouter or GraphHopper provide these)
 - Download a region's tiles for fully offline trips
 - Import GPX/KML routes and follow them with off-trail alerts
-- Rotate the map to your heading while navigating (Leaflet is north-up; MapLibre GL supports rotation)
 - Trail conditions, photos and difficulty filters
