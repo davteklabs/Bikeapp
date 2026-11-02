@@ -24,9 +24,15 @@
       <input id="search" type="search" placeholder="Search places, parks, trailheads…" enterkeyhint="search" aria-label="Search">
       <button type="button" id="search-clear" class="icon-btn" aria-label="Clear search" hidden>✕</button>
     </form>
-    <div class="mode-toggle" role="radiogroup" aria-label="Activity">
-      <button type="button" data-mode="bike" role="radio" aria-checked="true">🚲 Bike</button>
-      <button type="button" data-mode="hike" role="radio" aria-checked="false">🥾 Hike</button>
+    <div class="toggles">
+      <div class="mode-toggle" role="radiogroup" aria-label="Activity">
+        <button type="button" data-mode="bike" role="radio" aria-checked="true">🚲 Bike</button>
+        <button type="button" data-mode="hike" role="radio" aria-checked="false">🥾 Hike</button>
+      </div>
+      <div class="mode-toggle" id="view-toggle" role="radiogroup" aria-label="Mode">
+        <button type="button" data-view="explore" role="radio" aria-checked="true">Explore</button>
+        <button type="button" data-view="plan" role="radio" aria-checked="false">Plan route</button>
+      </div>
     </div>
     <div id="plan-bar" class="card" hidden>
       <button type="button" id="plan-show" class="plan-show" title="Show the whole route"><span class="plan-dot"></span><span id="plan-text"></span></button>

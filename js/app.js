@@ -7,8 +7,9 @@ import { TrackRecorder } from './recorder.js';
 import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
 import { SegmentStore, segmentLabel, HIGHWAY_LABEL } from './segments.js';
 import { togglePlanned, planIndex, planLength, midpoint } from './plan.js';
+import { planPieces, chainSegments, assembleRoute, TRAIL_SPEED, JOIN_GAP } from './trailroute.js';
 import { RATINGS, UNRATED, effectiveRating, ratingColor, effectiveName, exportTrailInfo } from './trail-info.js';
-import { haversine, bearing, destination, polylineLength, snapToPolyline, cumulativeDistances } from './geo.js';
+import { haversine, bearing, destination, polylineLength, snapToPolyline, cumulativeDistances, pointAlong } from './geo.js';
 import { formatDistance, formatDuration, formatSpeed, formatClock } from './format.js';
 
 // ---------------------------------------------------------------- state ----
@@ -52,7 +53,16 @@ const state = {
   trails: [],
   navHeading: null,     // direction of travel the map faces while navigating
   highlight: null,      // {name, id}: highlighted trail and the tapped segment of it
-  plan: load(PLAN_KEY).segments || [], // route plan: segments picked by press-and-hold, in order
+  plan: load(PLAN_KEY).segments || [], // route plan: trail segments picked, in order
+  planStart: load(PLAN_KEY).start || null, // start pin, or null = my location
+  planEnd: load(PLAN_KEY).end || null,     // end pin
+  planEndMode: load(PLAN_KEY).endMode || 'trail', // 'trail' (end of last trail) | 'start' (loop) | 'pin'
+  planRoute: null,      // the plan built into a navigable route
+  planBuilding: false,
+  view: 'explore',      // 'explore' (tap a trail for info) | 'plan' (tap trails to build a route)
+  picking: null,        // 'start' | 'end' while waiting for a tap to place that pin
+  navKind: null,        // 'directions' (A to B) | 'trail' (along a planned route)
+  sim: null,            // simulated ride in progress
 };
 
 const $ = (s) => document.querySelector(s);
@@ -239,6 +249,13 @@ map.on('click', (e) => {
   const alt = hits.find((h) => h.layer.id === 'route-alt');
   if (alt) { selectRoute(alt.properties.i); return; }
   const segs = hits.filter((h) => h.layer.id === 'segments').map((h) => segmentStore.segments.get(h.properties.id)).filter(Boolean);
+  if (state.view === 'plan') {
+    // Plan mode: a tap places a pin being picked, or adds/removes a trail.
+    if (state.picking) { setPlanPin(state.picking, e.lngLat); return; }
+    if (segs.length) togglePlan(nearestSegment(segs, e.lngLat));
+    else toast('Tap a trail to add it to your route');
+    return;
+  }
   if (segs.length) { showSegment(nearestSegment(segs, e.lngLat)); return; }
   const trail = hits.find((h) => h.layer.id === 'trails');
   if (trail) { showTrail(state.trails[trail.properties.i]); return; }
@@ -276,7 +293,8 @@ function flatCamera() {
 function startGPS() {
   if (!('geolocation' in navigator)) { toast('GPS is not available on this device'); return; }
   if (state.watchId != null) return;
-  state.watchId = navigator.geolocation.watchPosition(onFix, onGpsError, {
+  // Real fixes are ignored while a ride is being simulated.
+  state.watchId = navigator.geolocation.watchPosition((pos) => { if (!state.sim) onFix(pos); }, onGpsError, {
     enableHighAccuracy: true, maximumAge: 1000, timeout: 20000,
   });
 }
@@ -309,7 +327,9 @@ function onFix(pos) {
   if (state.recorder) { state.recorder.add(fix); updateRecordPanel(); }
   if (state.nav) onNavFix(fix);
   // Panning now would cut short the return to the flat view after navigating.
-  else if (state.following && !first && !flattening) map.panTo(ll(fix));
+  else if (state.following && !first && !flattening && state.view !== 'plan') map.panTo(ll(fix));
+  // A plan waiting for a GPS start can be built now.
+  if (state.view === 'plan' && !state.nav && !state.planStart && !state.planRoute && !state.planBuilding && state.plan.length) schedulePlanBuild();
 }
 
 function drawMe() {
@@ -421,6 +441,7 @@ function renderResults(results) {
 let sheetSeq = 0; // changes whenever the sheet's content is replaced
 function openSheet(html, onRender) {
   sheetSeq++;
+  state.planPanelShown = false;
   unselectSegment();
   els.sheetBody.innerHTML = html;
   els.sheet.hidden = false;
@@ -433,6 +454,12 @@ function closeSheet() {
   els.sheet.hidden = true; document.body.classList.remove('sheet-open');
 }
 els.sheetClose.addEventListener('click', () => {
+  if (state.view === 'plan' && !state.nav) {
+    // Closing the plan panel leaves plan mode (the route is kept); anything else returns to it.
+    if (state.planPanelShown) setView('explore');
+    else renderPlanPanel();
+    return;
+  }
   closeSheet();
   if (!state.nav) clearRoute();
 });
@@ -592,8 +619,11 @@ function clearRoute() {
 }
 
 // ----------------------------------------------------------- navigation ----
-async function startNavigation() {
-  const route = state.routes[state.routeIndex];
+/**
+ * @param route  directions (A to B), or a planned trail route
+ * @param kind   'directions' reroutes when you go off course; 'trail' guides you back to the trail
+ */
+async function startNavigation(route = state.routes[state.routeIndex], kind = 'directions') {
   if (!route) return;
   startGPS();
   if (!state.fix) { toast('Waiting for GPS before starting…'); if (!(await waitForFix(20000))) return toast('No GPS signal'); }
@@ -601,7 +631,10 @@ async function startNavigation() {
   state.origin = null;
   if (originMarker) { originMarker.remove(); originMarker = null; }
 
+  state.navKind = kind;
+  state.offTrailSince = 0;
   state.nav = new Navigator(route, { mode: settings.mode, units: settings.units });
+  if (kind === 'trail') drawPlanRoute(); // the route line stays; direction arrows go
   state.following = true;
   closeSheet();
   document.body.classList.add('navigating');
@@ -622,7 +655,16 @@ function onNavFix(fix) {
   pointMe(state.navHeading);
   if (state.following) followCamera(fix, state.navHeading);
   els.offroute.hidden = !st.offRoute;
-  if (st.offRoute) reroute(fix);
+  if (st.offRoute && state.navKind === 'trail') {
+    // Never route you away from the trails you picked: guide you back to them.
+    els.offroute.textContent = `Off route — head back to the trail (${formatDistance(st.distanceFromRoute, settings.units)})`;
+    if (Date.now() - state.offTrailSince > 30000) { speak('Off route. Head back to the trail'); state.offTrailSince = Date.now(); }
+  } else if (st.offRoute) {
+    els.offroute.textContent = 'Off route — rerouting…';
+    reroute(fix);
+  } else {
+    state.offTrailSince = 0;
+  }
   if (st.arrived) finishNavigation(true);
 }
 
@@ -662,7 +704,9 @@ async function reroute(fix) {
 
 function finishNavigation(arrived) {
   if (!state.nav) return;
-  state.nav = null;
+  stopSim();
+  const wasTrail = state.navKind === 'trail';
+  state.nav = null; state.navKind = null;
   document.body.classList.remove('navigating');
   els.banner.hidden = true; els.footer.hidden = true; els.offroute.hidden = true; els.recenter.hidden = true;
   releaseWakeLock();
@@ -671,8 +715,10 @@ function finishNavigation(arrived) {
   setData('routes', EMPTY);
   if (destMarker) { destMarker.remove(); destMarker = null; }
   state.dest = null; state.routes = [];
+  if (wasTrail) drawPlanRoute(); // keep showing the planned route
   if (state.recorder?.autoStarted) stopRecording({ title: arrived ? '🏁 You have arrived' : 'Navigation ended' });
   else if (arrived) toast('🏁 You have arrived');
+  if (wasTrail && !state.recorder && els.sheet.hidden) renderPlanPanel();
 }
 
 $('#btn-end').addEventListener('click', () => { speechSynthesis?.cancel(); finishNavigation(false); });
@@ -876,7 +922,7 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     <div class="muted trail-len"></div>
     <div class="rating-now"><span class="swatch"></span><span class="txt"></span></div>
     <div class="row actions">
-      <button class="btn primary" id="seg-go">Directions to this trail</button>
+      <button class="btn primary" id="seg-go">Navigate this trail</button>
       <button class="btn" id="seg-plan"></button>
     </div>
     <p class="muted hint" id="plan-hint">Tip: press and hold a trail on the map to add it to your route.</p>
@@ -913,11 +959,15 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     root.querySelector('.meta').textContent = `${HIGHWAY_LABEL[seg.kind] || 'Trail'} · this segment ${formatDistance(polylineLength(seg.coords), settings.units)}`;
     root.querySelector('.name-src').textContent = NAME_SOURCE[effectiveName(seg.id, seg.name, defaultInfo, myNames).source] || 'No name in the map data';
 
+    // Navigate along this trail: plan it (all of it, in order from the end nearest your
+    // start) and open the plan, where the start and end can be adjusted.
     root.querySelector('#seg-go').onclick = () => {
-      const from = state.origin || state.fix || map.getCenter();
+      if (state.plan.length && !confirm('Replace your current route with this trail?')) return;
+      const from = state.planStart || state.fix || map.getCenter();
       const trail = segmentsNamed(name).length ? segmentsNamed(name) : [seg];
-      const near = nearestPointOnTrail({ lat: from.lat, lng: from.lng }, { lines: trail.map((s) => s.coords) });
-      planRoute({ lat: near.point.lat, lng: near.point.lng, name: labelOf(seg) });
+      state.plan = chainSegments(trail, { lat: from.lat, lng: from.lng }).reduce((plan, s) => togglePlanned(plan, s), []);
+      savePlan();
+      setView('plan');
     };
     const planBtn = root.querySelector('#seg-plan');
     const syncPlanBtn = () => {
@@ -980,19 +1030,49 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
 }
 
 // ------------------------------------------------------------ route plan ----
-let planMarkers = [];
+// Two modes: Explore (tap a trail for its info) and Plan route (tap trails, in
+// order, to build a route). The plan is navigated along the trails themselves:
+// you join trail #1 at its closest point to your start, and #1 is ridden toward
+// where #2 joins it.
+let planMarkers = [], arrowMarkers = [], planStartMarker = null, planEndMarker = null;
+const SIM_SPEEDUP = 3;
+
+function setView(view) {
+  state.view = view;
+  state.picking = null;
+  document.body.classList.toggle('planning', view === 'plan');
+  document.querySelectorAll('#view-toggle button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.view === view)));
+  if (view === 'plan') {
+    if (destMarker || state.routes.length) clearRoute(); // A-to-B directions don't mix with the plan
+    renderPlanPanel();
+    schedulePlanBuild(0);
+    if (state.plan.length) fitTo(state.plan.flatMap((s) => s.coords), { top: 120, left: 40, right: 40, bottom: els.sheet.offsetHeight + 20 });
+  } else {
+    closeSheet();
+    drawPlanRoute();
+  }
+  drawPlan();
+}
+document.querySelectorAll('#view-toggle button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 
 function togglePlan(seg) {
   const had = planIndex(state.plan, seg.id) >= 0;
   state.plan = togglePlanned(state.plan, seg);
   savePlan();
   navigator.vibrate?.(25);
-  toast(had ? `Removed ${labelOf(seg)} from your route` : `Added ${labelOf(seg)} to your route (#${state.plan.length})`);
+  if (state.view !== 'plan') toast(had ? `Removed ${labelOf(seg)} from your route` : `Added ${labelOf(seg)} to your route (#${state.plan.length})`);
 }
 
 function savePlan() {
-  save(PLAN_KEY, { segments: state.plan });
+  save(PLAN_KEY, { segments: state.plan, start: state.planStart, end: state.planEnd, endMode: state.planEndMode });
   drawPlan();
+  if (state.view === 'plan') {
+    // The old route no longer matches the plan: drop it so it can't be started by mistake.
+    state.planRoute = null;
+    drawPlanRoute();
+    renderPlanPanel();
+    schedulePlanBuild();
+  }
 }
 
 function drawPlan() {
@@ -1006,9 +1086,183 @@ function drawPlan() {
     return new maplibregl.Marker({ element: el }).setLngLat(ll(midpoint(s))).addTo(map);
   });
   const n = state.plan.length;
-  els.planBar.hidden = !n;
-  document.body.classList.toggle('plan-on', n > 0);
+  els.planBar.hidden = !n || state.view === 'plan';
+  document.body.classList.toggle('plan-on', !els.planBar.hidden);
   els.planText.textContent = `Route: ${n} ${n === 1 ? 'segment' : 'segments'} · ${formatDistance(planLength(state.plan), settings.units)}`;
+  // Start and end pins only show while planning.
+  const planning = state.view === 'plan';
+  planStartMarker?.remove(); planStartMarker = null;
+  planEndMarker?.remove(); planEndMarker = null;
+  if (planning && state.planStart) planStartMarker = pinMarker('#188038', state.planStart);
+  if (planning && state.planEndMode === 'pin' && state.planEnd) planEndMarker = pinMarker('#d93025', state.planEnd);
+}
+
+function setPlanPin(which, p) {
+  const pin = { lat: p.lat, lng: p.lng };
+  if (which === 'start') state.planStart = pin;
+  else { state.planEnd = pin; state.planEndMode = 'pin'; }
+  state.picking = null;
+  savePlan();
+}
+
+let planTimer = null, planBuild = 0;
+function schedulePlanBuild(ms = 400) {
+  clearTimeout(planTimer);
+  planTimer = setTimeout(buildPlanRoute, ms);
+}
+
+/** A road/path link between two points from the router, or a straight line if it can't help. */
+async function linkLeg(from, to) {
+  try {
+    const [r] = await fetchRoutes(settings.mode, [from, to], { alternatives: false });
+    return { coords: r.coords, name: '', steps: r.steps, link: true };
+  } catch {
+    return { coords: [from, to], name: '', link: true };
+  }
+}
+
+async function buildPlanRoute() {
+  const seq = ++planBuild;
+  const start = state.planStart || (state.fix && { lat: state.fix.lat, lng: state.fix.lng });
+  state.planRoute = null;
+  if (!state.plan.length || !start) { state.planBuilding = false; drawPlanRoute(); renderPlanPanel(); return; }
+  state.planBuilding = true;
+  renderPlanPanel();
+  const end = state.planEndMode === 'start' ? start : state.planEndMode === 'pin' ? state.planEnd : null;
+  const { pieces, gapAfter } = planPieces(start, state.plan, end);
+  const legs = [];
+  // Getting to trail #1 (skipped when you're already practically on it).
+  if (pieces[0].gapBefore > 40) legs.push(await linkLeg(start, pieces[0].coords[0]));
+  for (const [k, p] of pieces.entries()) {
+    if (k > 0 && p.gapBefore > JOIN_GAP) legs.push(await linkLeg(legs.at(-1).coords.at(-1), p.coords[0]));
+    legs.push({ coords: p.coords, name: nameOf(p.seg) || '' });
+  }
+  if (end && gapAfter > 40) legs.push(await linkLeg(legs.at(-1).coords.at(-1), end));
+  if (seq !== planBuild) return; // the plan changed meanwhile
+  const route = assembleRoute(settings.mode, legs, state.planEndMode === 'start' ? 'Arrive back at your start' : 'Arrive at your end point');
+  route.linkDistance = legs.filter((l) => l.link).reduce((d, l) => d + polylineLength(l.coords), 0);
+  state.planRoute = route;
+  state.planBuilding = false;
+  drawPlanRoute();
+  renderPlanPanel();
+}
+
+/** The built route as a blue line with direction arrows (plan mode only). */
+function drawPlanRoute() {
+  for (const m of arrowMarkers) m.remove();
+  arrowMarkers = [];
+  const r = state.view === 'plan' || state.navKind === 'trail' ? state.planRoute : null;
+  if (!r) { if (!state.routes.length) setData('routes', EMPTY); return; }
+  setData('routes', fc([lineFeature(r.coords, { i: 0, active: true })]));
+  if (state.nav) return;
+  const every = Math.max(120, r.distance / 25);
+  for (let d = every / 2; d < r.distance; d += every) {
+    const a = pointAlong(r.coords, r.cum, d), b = pointAlong(r.coords, r.cum, Math.min(r.distance, d + 10));
+    const el = document.createElement('div');
+    el.className = 'dir-arrow';
+    el.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3 5 19l7-4 7 4z"/></svg>';
+    arrowMarkers.push(new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
+      .setLngLat(ll(a)).setRotation(bearing(a, b)).addTo(map));
+  }
+}
+
+function renderPlanPanel() {
+  if (state.view !== 'plan' || state.nav) return;
+  const u = settings.units, r = state.planRoute, n = state.plan.length;
+  openSheet(`
+    <h2>Plan your route</h2>
+    <p class="muted hint">${n ? 'Tap trails in the order you’ll take them; tap again to remove. You join trail #1 at its closest point to your start, heading toward trail #2.'
+      : 'Tap the trails you want to take, in order. You’ll join trail #1 at its closest point to your start.'}</p>
+    <div class="plan-row"><span class="pin-dot start"></span><b>Start</b><span class="grow plan-start"></span><button class="btn small" id="pick-start"></button></div>
+    <ol class="plan-list"></ol>
+    <div class="plan-row"><span class="pin-dot end"></span><b>End</b>
+      <select id="end-mode"><option value="trail">End of the last trail</option><option value="start">Back to the start (loop)</option><option value="pin">A pin on the map</option></select>
+      <button class="btn small" id="pick-end" hidden></button></div>
+    <div class="summary plan-summary"></div>
+    <div class="row actions">
+      <button class="btn primary" id="plan-go" ${r ? '' : 'disabled'}>▶ Start navigation</button>
+      <button class="btn" id="plan-sim" ${r ? '' : 'disabled'} title="Ride the route on screen at ${SIM_SPEEDUP}× speed">Simulate</button>
+      <button class="btn" id="plan-steps" ${r ? '' : 'disabled'}>Steps</button>
+    </div>
+    <ul class="steps" hidden></ul>`, (root) => {
+    root.querySelector('.plan-start').textContent = state.planStart ? 'Pin on the map' : 'My location (GPS)';
+    const pickStart = root.querySelector('#pick-start');
+    pickStart.textContent = state.picking === 'start' ? 'Tap the map…' : state.planStart ? 'Use my location' : 'Pick on map';
+    pickStart.onclick = () => {
+      if (state.planStart && state.picking !== 'start') { state.planStart = null; savePlan(); return; }
+      state.picking = state.picking === 'start' ? null : 'start';
+      if (state.picking) toast('Tap the map where you’ll start');
+      renderPlanPanel();
+    };
+    const list = root.querySelector('.plan-list');
+    state.plan.forEach((s, i) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="plan-num">${i + 1}</span><span class="grow n"></span><span class="muted d">${formatDistance(polylineLength(s.coords), u)}</span><button class="icon-btn" aria-label="Remove">✕</button>`;
+      li.querySelector('.n').textContent = labelOf(s);
+      li.querySelector('button').onclick = () => togglePlan(s);
+      list.appendChild(li);
+    });
+    const endMode = root.querySelector('#end-mode');
+    endMode.value = state.planEndMode;
+    endMode.onchange = () => {
+      state.planEndMode = endMode.value;
+      if (endMode.value === 'pin' && !state.planEnd) { state.picking = 'end'; toast('Tap the map where you’ll finish'); }
+      savePlan();
+    };
+    const pickEnd = root.querySelector('#pick-end');
+    pickEnd.hidden = state.planEndMode !== 'pin';
+    pickEnd.textContent = state.picking === 'end' ? 'Tap the map…' : 'Move pin';
+    pickEnd.onclick = () => { state.picking = state.picking === 'end' ? null : 'end'; if (state.picking) toast('Tap the map where you’ll finish'); renderPlanPanel(); };
+
+    const summary = root.querySelector('.plan-summary');
+    if (!n) summary.textContent = '';
+    else if (!state.planStart && !state.fix) summary.textContent = 'Waiting for GPS — or pick a start on the map.';
+    else if (!r) summary.textContent = 'Working out the route…';
+    else {
+      summary.innerHTML = `<span class="big">${formatDuration(r.duration)}</span><span>${formatDistance(r.distance, u)}</span><span class="muted link-note"></span>`;
+      if (r.linkDistance > 40) summary.querySelector('.link-note').textContent = `incl. ${formatDistance(r.linkDistance, u)} off the picked trails`;
+    }
+    if (r) {
+      root.querySelector('#plan-go').onclick = () => startNavigation(r, 'trail');
+      root.querySelector('#plan-sim').onclick = () => simulateRide(r);
+      const stepsEl = root.querySelector('.steps');
+      stepsEl.innerHTML = r.steps.map((s, i) => `<li data-i="${i}"><span class="maneuver-icon">${iconSvg(s.icon)}</span><span class="t"></span><span class="d">${s.distance ? formatDistance(s.distance, u) : ''}</span></li>`).join('');
+      stepsEl.querySelectorAll('li').forEach((li) => {
+        const s = r.steps[+li.dataset.i];
+        li.querySelector('.t').textContent = s.text;
+        li.onclick = () => map.easeTo({ center: ll(s.location), zoom: 16 });
+      });
+      root.querySelector('#plan-steps').onclick = () => { stepsEl.hidden = !stepsEl.hidden; };
+    }
+  });
+  state.planPanelShown = true;
+}
+
+/** Ride the route on screen (for testing away from the trail): fake GPS fixes along it. */
+async function simulateRide(route) {
+  stopSim();
+  const speed = (TRAIL_SPEED[settings.mode] || TRAIL_SPEED.bike) * SIM_SPEEDUP;
+  const fixAt = (d) => {
+    const p = pointAlong(route.coords, route.cum, d);
+    return { coords: { latitude: p.lat, longitude: p.lng, accuracy: 5, altitude: null, speed, heading: null }, timestamp: Date.now() };
+  };
+  let along = 0;
+  state.sim = { timer: null };
+  onFix(fixAt(0));
+  toast(`Simulated ride at ${SIM_SPEEDUP}× speed — tap End to stop`);
+  await startNavigation(route, 'trail');
+  if (!state.sim) return;
+  state.sim.timer = setInterval(() => {
+    along = Math.min(route.distance, along + speed);
+    onFix(fixAt(along));
+    if (along >= route.distance) stopSim();
+  }, 1000);
+}
+
+function stopSim() {
+  if (!state.sim) return;
+  clearInterval(state.sim.timer);
+  state.sim = null;
 }
 
 $('#plan-undo').addEventListener('click', () => {
@@ -1023,9 +1277,7 @@ $('#plan-clear').addEventListener('click', () => {
   state.plan = [];
   savePlan();
 });
-$('#plan-show').addEventListener('click', () => {
-  if (state.plan.length) fitTo(state.plan.flatMap((s) => s.coords), { top: 160, left: 40, right: 40, bottom: 60 });
-});
+$('#plan-show').addEventListener('click', () => setView('plan'));
 
 function exportMyTrailInfo() {
   const json = JSON.stringify(exportTrailInfo(defaultInfo, myRatings, myNames), null, 2);
@@ -1079,6 +1331,7 @@ function stopRecording({ title = 'Activity recorded' } = {}) {
     root.querySelector('#discard').onclick = () => {
       setData('record', EMPTY);
       closeSheet();
+      renderPlanPanel(); // back to the plan when a planned ride ends (no-op outside plan mode)
     };
   });
 }
@@ -1126,7 +1379,7 @@ $('#btn-layers').addEventListener('click', () => {
 function persistLayers() { save(SETTINGS_KEY, settings); applyLayers(); }
 
 // ----------------------------------------------------------- mode switch ----
-document.querySelectorAll('.mode-toggle button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+document.querySelectorAll('.mode-toggle button[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
 function setMode(mode) {
   if (mode === settings.mode) return;
   settings.mode = mode;
@@ -1136,10 +1389,11 @@ function setMode(mode) {
   syncModeUI();
   applyLayers();
   if (state.dest && !state.nav) planRoute(state.dest);
+  if (state.view === 'plan' && !state.nav) schedulePlanBuild(0); // trail speeds and links differ by activity
 }
 function syncModeUI() {
   document.body.dataset.mode = settings.mode;
-  document.querySelectorAll('.mode-toggle button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === settings.mode)));
+  document.querySelectorAll('.mode-toggle button[data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === settings.mode)));
 }
 
 // --------------------------------------------------------------- utils ----
@@ -1152,6 +1406,11 @@ function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; }
 function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 
 // ----------------------------------------------------------------- boot ----
+// Map controls sit just below the top bar, which changes height.
+new ResizeObserver(() => {
+  const r = $('#topbar').getBoundingClientRect();
+  document.body.style.setProperty('--topbar-h', `${r.bottom}px`);
+}).observe($('#topbar'));
 syncModeUI();
 applyLayers();
 startGPS();

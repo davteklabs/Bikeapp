@@ -36,6 +36,26 @@ export function osrmResponse() {
   };
 }
 
+/** A routing answer that is just a straight line between two [lng, lat] points. */
+export function straightRoute(a, b) {
+  const R = 6371008.8, r = Math.PI / 180;
+  const d = 2 * R * Math.asin(Math.sqrt(Math.sin(((b[1] - a[1]) * r) / 2) ** 2
+    + Math.cos(a[1] * r) * Math.cos(b[1] * r) * Math.sin(((b[0] - a[0]) * r) / 2) ** 2));
+  const brg = (Math.atan2(Math.sin((b[0] - a[0]) * r) * Math.cos(b[1] * r),
+    Math.cos(a[1] * r) * Math.sin(b[1] * r) - Math.sin(a[1] * r) * Math.cos(b[1] * r) * Math.cos((b[0] - a[0]) * r)) / r + 360) % 360;
+  return {
+    code: 'Ok',
+    routes: [{
+      distance: d, duration: d / 4,
+      geometry: { type: 'LineString', coordinates: [a, b] },
+      legs: [{ distance: d, duration: d / 4, steps: [
+        { name: '', distance: d, duration: d / 4, maneuver: { type: 'depart', location: a, bearing_after: brg } },
+        { name: '', distance: 0, duration: 0, maneuver: { type: 'arrive', location: b } },
+      ] }],
+    }],
+  };
+}
+
 /** Shipped trail-segment tile: "Ridge Trail" in two pieces from CORNER to END, plus an unnamed track. */
 export function segmentTile() {
   const mid = { lat: (CORNER.lat + END.lat) / 2, lng: CORNER.lng };

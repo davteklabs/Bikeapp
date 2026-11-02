@@ -60,8 +60,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .searchbox .ico { width: 20px; height: 20px; fill: var(--ink-soft); flex: none; }
 #search { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 16px; padding: 8px 4px; }
 #search::-webkit-search-cancel-button { display: none; }
+.toggles { display: flex; flex-wrap: wrap; gap: 8px; align-self: flex-start; }
+#view-toggle button[aria-checked="true"] { background: #9c27b0; color: #fff; }
 .mode-toggle { display: inline-flex; align-self: flex-start; background: var(--bg); border-radius: 999px; box-shadow: var(--shadow); padding: 3px; }
-.mode-toggle button { border: 0; background: transparent; border-radius: 999px; padding: 6px 14px; font-weight: 600; color: var(--ink-soft); }
+.mode-toggle button { border: 0; background: transparent; border-radius: 999px; padding: 6px 10px; font-weight: 600; color: var(--ink-soft); }
 .mode-toggle button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); }
 #plan-bar { display: flex; align-items: center; gap: 2px; align-self: flex-start; max-width: 100%; border-radius: 999px; padding: 3px 6px 3px 4px; }
 .plan-show { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 6px 8px; font-weight: 700; min-width: 0; }
@@ -71,6 +73,22 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .plan-num { width: 22px; height: 22px; border-radius: 50%; background: #9c27b0; color: #fff; border: 2px solid #fff;
   font: 700 12px/18px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.4); pointer-events: none; }
 #sheet .hint { font-size: 13px; margin: 8px 0 0; }
+.plan-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+.plan-row .grow, .plan-list .grow { flex: 1; min-width: 0; }
+.plan-row select { font: inherit; padding: 4px 6px; background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
+.pin-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); }
+.pin-dot.start { background: #188038; }
+.pin-dot.end { background: #d93025; }
+.btn.small { padding: 6px 12px; font-size: 14px; }
+.plan-list { list-style: none; margin: 0; padding: 0 0 0 4px; border-left: 3px solid #9c27b0; }
+.plan-list li { display: flex; align-items: center; gap: 8px; padding: 6px 0 6px 8px; border-bottom: 1px solid var(--line); }
+.plan-list li .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-list li .d { font-size: 13px; white-space: nowrap; }
+.plan-list .plan-num { flex: none; }
+.plan-summary .link-note { font-size: 13px; }
+.dir-arrow { width: 18px; height: 18px; pointer-events: none; }
+.dir-arrow svg { width: 18px; height: 18px; fill: #fff; stroke: #1a73e8; stroke-width: 2.5; stroke-linejoin: round; }
+#offroute { white-space: nowrap; max-width: calc(100vw - 24px); overflow: hidden; text-overflow: ellipsis; }
 /* No browser text-selection or callout while pressing and holding the map. */
 #map { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 #search-results { list-style: none; margin: 0; padding: 4px 0; max-height: 50vh; overflow: auto; }
@@ -179,8 +197,8 @@ body.navigating .me-marker .dot, body.navigating .me-marker .cone { display: non
 .pin-marker svg { width: 32px; height: 42px; filter: drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
 .maplibregl-map { font: inherit; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
-.maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 110px); }
-body.plan-on .maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 160px); } /* below the route bar */
+/* Below the top bar, whatever its height (toggles can wrap; the route bar comes and goes). */
+.maplibregl-ctrl-top-left { top: calc(var(--topbar-h, 100px) + 14px); }
 body.navigating .maplibregl-ctrl-top-left { display: none; }
 .trail-tip .maplibregl-popup-content { padding: 4px 8px; font-weight: 600; color: #1b1f1d; }
 

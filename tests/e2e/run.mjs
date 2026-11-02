@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from '../../scripts/serve.mjs';
 import { tilesInBounds, tileKey } from '../../js/segments.js';
-import { osrmResponse, overpassResponse, segmentTile, START, CORNER, END } from '../fixtures.mjs';
+import { osrmResponse, overpassResponse, segmentTile, straightRoute, START, CORNER, END } from '../fixtures.mjs';
 
 function loadPlaywright() {
   const require = createRequire(import.meta.url);
@@ -35,7 +35,14 @@ await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
   const url = route.request().url();
   const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body), headers: { 'Access-Control-Allow-Origin': '*' } });
   if (/\.png$/.test(url)) return route.fulfill({ contentType: 'image/png', body: PNG, headers: { 'Access-Control-Allow-Origin': '*' } });
-  if (url.includes('routing.openstreetmap.de')) { calls.route++; return json(osrmResponse()); }
+  if (url.includes('routing.openstreetmap.de')) {
+    calls.route++;
+    // Directions to END get the fixture route; anything else (links in a trail plan) a straight line.
+    const pts = url.match(/driving\/([^?]+)/)[1].split(';').map((p) => p.split(',').map(Number));
+    const [lng, lat] = pts.at(-1);
+    if (Math.abs(lat - END.lat) < 1e-4 && Math.abs(lng - END.lng) < 1e-4) return json(osrmResponse());
+    return json(straightRoute(pts[0], pts.at(-1)));
+  }
   if (url.includes('nominatim') && url.includes('/search')) {
     calls.search++;
     return json([{ name: 'Ridge Summit', display_name: 'Ridge Summit, Testland', type: 'peak', lat: String(END.lat), lon: String(END.lng) }]);
@@ -115,7 +122,7 @@ try {
 
   // Name the unnamed track, then get directions to it.
   const quarry = { lng: START.lng + 0.0015, lat: START.lat - 0.002 };
-  await page.evaluate((p) => window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), quarry);
+  await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), quarry);
   await page.waitForTimeout(800);
   const tap2 = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), quarry);
   await page.mouse.click(tap2.x, tap2.y);
@@ -131,10 +138,15 @@ try {
   assert.match(await page.textContent('#sheet .name-src'), /Name set by you/);
   ok('renaming a trail updates the map and saves it on this device');
   await page.click('#sheet #seg-go');
-  await page.waitForSelector('#btn-start');
-  assert.match(await page.textContent('#sheet .dest-name'), /Quarry Spur/);
-  ok('Directions from the trail panel plans a route to the trail');
-  await page.click('#sheet-close');
+  await page.waitForSelector('#sheet .plan-list li');
+  assert.equal(await page.getAttribute('#view-toggle [data-view="plan"]', 'aria-checked'), 'true');
+  assert.match(await page.textContent('#sheet .plan-list'), /Quarry Spur/);
+  ok('"Navigate this trail" opens Plan route with that trail');
+  await page.click('#view-toggle [data-view="explore"]');
+  assert.ok(await page.isHidden('#sheet'));
+  assert.ok(await page.isVisible('#plan-bar'), 'the route bar brings you back to the plan');
+  page.once('dialog', (d) => d.accept());
+  await page.click('#plan-clear');
 
   // Route plan: press and hold trails to add them, hold again to remove.
   const planIds = () => page.evaluate(() => window.trailnav.state.plan.map((s) => s.id));
@@ -148,7 +160,7 @@ try {
   };
   const ridgeA = { lng: CORNER.lng, lat: (3 * CORNER.lat + END.lat) / 4 }; // segment 1001
   const ridgeB = { lng: CORNER.lng, lat: (CORNER.lat + 3 * END.lat) / 4 }; // segment 1002
-  await page.evaluate((p) => window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), ridgeA);
+  await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), ridgeA);
   await page.waitForTimeout(800);
   await holdOn(ridgeA);
   assert.deepEqual(await planIds(), ['1001']);
@@ -157,7 +169,7 @@ try {
   await holdOn(ridgeB);
   assert.deepEqual(await planIds(), ['1001', '1002']);
   assert.match(await page.textContent('#plan-text'), /2 segments · 300 m/);
-  assert.deepEqual(await page.$$eval('.plan-num', (n) => n.map((x) => x.textContent)), ['1', '2']);
+  assert.deepEqual(await page.$$eval('#map .plan-num', (n) => n.map((x) => x.textContent)), ['1', '2']);
   ok('press and hold adds trails to the route in order, with distance');
   await snap(page, '1c-plan');
   await holdOn(ridgeA);
@@ -196,6 +208,62 @@ try {
   ok('touch: hold adds to the route, a quick tap opens the trail panel');
   await page.click('#plan-undo');
   await page.click('#sheet-close');
+
+  // Plan route mode: tap trails in order; start from GPS (START, 500 m west of the trail).
+  await page.click('#view-toggle [data-view="plan"]');
+  await page.waitForSelector('#sheet .plan-row');
+  const tapAt = async (p) => {
+    const pt = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), p);
+    await page.mouse.click(pt.x, pt.y);
+    await page.waitForTimeout(250);
+  };
+  await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), ridgeA);
+  await page.waitForTimeout(600);
+  await tapAt(ridgeA);
+  await tapAt(ridgeB);
+  assert.deepEqual(await planIds(), ['1001', '1002']);
+  assert.equal(await page.locator('#sheet .plan-list li').count(), 2);
+  await page.waitForFunction(() => window.trailnav.state.planRoute, null, { timeout: 5000 });
+  const planSteps = await page.evaluate(() => window.trailnav.state.planRoute.steps.map((s) => s.text));
+  assert.deepEqual(planSteps, ['Head east', 'Turn left onto Ridge Trail', 'Arrive at your end point']);
+  assert.match(await page.textContent('#sheet .plan-summary'), /4 min.*800 m.*incl\. 500 m off the picked trails/);
+  ok('plan mode: tap trails in order; route joins #1 at its closest point and turns onto it');
+  await snap(page, '1d-plan-mode');
+
+  // Drop a start pin right on the trail: no link needed, and #1 still sets the direction (north).
+  await page.click('#sheet #pick-start');
+  await tapAt({ lng: CORNER.lng + 0.0001, lat: CORNER.lat + 0.0003 });
+  await page.waitForFunction(() => window.trailnav.state.planStart && window.trailnav.state.planRoute, null, { timeout: 5000 });
+  const r2 = await page.evaluate(() => ({ steps: window.trailnav.state.planRoute.steps.map((s) => s.text), d: window.trailnav.state.planRoute.distance }));
+  assert.deepEqual(r2.steps, ['Head north on Ridge Trail', 'Arrive at your end point']);
+  assert.ok(Math.abs(r2.d - 267) < 15, r2.d);
+  assert.match(await page.textContent('#sheet .plan-start'), /Pin on the map/);
+  ok('a start pin sets where you join the trail');
+  await page.click('#sheet #pick-start'); // back to my location
+
+  // Simulate the ride: trail navigation, tilted view, moving along.
+  await page.waitForFunction(() => !window.trailnav.state.planStart && window.trailnav.state.planRoute?.steps.length === 3, null, { timeout: 5000 });
+  await page.click('#sheet #plan-sim');
+  await page.waitForSelector('#nav-banner:not([hidden])');
+  assert.equal(await page.textContent('#nav-text'), 'Turn left onto Ridge Trail');
+  const d0 = parseInt(await page.textContent('#nav-dist'));
+  await page.waitForTimeout(3200);
+  const d1 = parseInt(await page.textContent('#nav-dist'));
+  assert.ok(d1 < d0 - 15, `moving toward the turn (${d0} → ${d1} m)`);
+  assert.ok(await page.evaluate(() => window.trailnav.map.getPitch()) > 50);
+  ok(`simulated ride navigates along the plan (${d0} m → ${d1} m to the turn)`);
+  await snap(page, '1e-simulate');
+  await page.click('#btn-end');
+  assert.equal(await page.evaluate(() => window.trailnav.state.sim), null, 'End stops the simulation');
+  await page.click('#sheet #discard');
+  await page.waitForSelector('#sheet .plan-row');
+  ok('ending returns to the plan');
+  await page.click('#sheet-close');
+  assert.equal(await page.getAttribute('#view-toggle [data-view="explore"]', 'aria-checked'), 'true');
+  page.once('dialog', (d) => d.accept());
+  await page.click('#plan-clear');
+  // Back to where the rest of the test expects GPS to be.
+  await setGPS(START);
 
   await page.fill('#search', 'Ridge');
   await page.waitForSelector('#search-results li .name');
@@ -253,7 +321,7 @@ try {
 
   await page.click('.mode-toggle [data-mode="hike"]');
   assert.equal(await page.getAttribute('body', 'data-mode'), 'hike');
-  await page.evaluate(() => window.trailnav.map.setZoom(12));
+  await page.evaluate(() => void window.trailnav.map.setZoom(12));
   await page.click('#btn-trails');
   await page.waitForSelector('.trail-list li');
   assert.match(await page.textContent('.trail-list li'), /Panorama Loop/);

@@ -8,7 +8,7 @@ const SHELL_FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'vendor/maplibre-gl/maplibre-gl.css', 'vendor/maplibre-gl/maplibre-gl.js',
   'js/app.js', 'js/geo.js', 'js/format.js', 'js/instructions.js', 'js/routing.js', 'js/navigator.js',
-  'js/recorder.js', 'js/trails.js', 'js/search.js', 'js/layers.js', 'js/segments.js', 'js/trail-info.js', 'js/plan.js',
+  'js/recorder.js', 'js/trails.js', 'js/search.js', 'js/layers.js', 'js/segments.js', 'js/trail-info.js', 'js/plan.js', 'js/trailroute.js',
   'data/trail-info.json', 'data/trails/index.json', 'data/trails/names.json',
 ];
 // Trail segment tiles (data/trails/tiles/*) are same-origin, so they're cached as
