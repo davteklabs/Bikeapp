@@ -1,8 +1,8 @@
 // Synthetic OSRM response: head east ~500 m along "River Path", turn left
 // onto "Ridge Trail" and go north ~300 m, then arrive.
-export const START = { lat: 47.0, lng: 8.0 };
-export const CORNER = { lat: 47.0, lng: 8.00658 };   // ~500 m east
-export const END = { lat: 47.0027, lng: 8.00658 };    // ~300 m north of corner
+export const START = { lat: 38.75, lng: -121.17 };       // Granite Bay, CA
+export const CORNER = { lat: 38.75, lng: -121.164241 }; // ~500 m east
+export const END = { lat: 38.7527, lng: -121.164241 };   // ~300 m north of corner
 
 function interp(a, b, n) {
   const out = [];
@@ -36,15 +36,28 @@ export function osrmResponse() {
   };
 }
 
+/** Shipped trail-segment tile: "Ridge Trail" in two pieces from CORNER to END, plus an unnamed track. */
+export function segmentTile() {
+  const mid = { lat: (CORNER.lat + END.lat) / 2, lng: CORNER.lng };
+  return {
+    v: 1,
+    ways: [
+      [1001, 'Ridge Trail', 'p', [[CORNER.lng, CORNER.lat], [mid.lng, mid.lat]]],
+      [1002, 'Ridge Trail', 'p', [[mid.lng, mid.lat], [END.lng, END.lat]]],
+      [1003, null, 't', [[START.lng, START.lat - 0.002], [START.lng + 0.003, START.lat - 0.002]]],
+    ],
+  };
+}
+
 export function overpassResponse() {
   return {
     elements: [{
       type: 'relation', id: 123,
       tags: { type: 'route', route: 'hiking', name: 'Panorama Loop', ref: 'P1', network: 'lwn', distance: '7.5', sac_scale: 'hiking' },
       members: [
-        { type: 'way', ref: 1, role: '', geometry: [{ lat: 47.001, lon: 8.001 }, { lat: 47.002, lon: 8.002 }] },
-        { type: 'way', ref: 2, role: '', geometry: [{ lat: 47.002, lon: 8.002 }, { lat: 47.003, lon: 8.004 }] },
-        { type: 'node', ref: 3, role: 'guidepost', lat: 47.001, lon: 8.001 },
+        { type: 'way', ref: 1, role: '', geometry: [{ lat: 38.751, lon: -121.169 }, { lat: 38.752, lon: -121.168 }] },
+        { type: 'way', ref: 2, role: '', geometry: [{ lat: 38.752, lon: -121.168 }, { lat: 38.753, lon: -121.166 }] },
+        { type: 'node', ref: 3, role: 'guidepost', lat: 38.751, lon: -121.169 },
       ],
     }],
   };

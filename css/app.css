@@ -112,6 +112,18 @@ body.navigating #btn-trails, body.navigating #btn-layers { display: none; }
 .tag { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--bg-soft); color: var(--ink-soft); margin-right: 4px; }
 .settings label { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
 .settings select { font: inherit; padding: 4px 6px; background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
+.trail-list .swatch { background: #ff9800; }
+.rating-now { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 6px 0; }
+.rating-now .swatch, .rate .swatch { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); flex: none; }
+.rate-buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 8px 0; }
+.rate { display: flex; align-items: center; gap: 8px; border: 2px solid var(--line); background: var(--bg); border-radius: 10px; padding: 9px 12px; font-weight: 600; text-align: left; }
+.rate[aria-pressed="true"] { border-color: var(--accent); background: var(--bg-soft); }
+#sheet .same { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
+.trail-len { font-size: 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.legend i { width: 22px; height: 6px; border-radius: 3px; box-shadow: 0 0 0 1px #fff, 0 0 0 2px var(--line); }
+.settings .note { font-size: 13px; margin: 8px 0; }
 .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 10px 0; }
 .stats-grid div { background: var(--bg-soft); border-radius: 10px; padding: 10px; }
 .stats-grid b { display: block; font-size: 20px; }

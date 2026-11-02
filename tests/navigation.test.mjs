@@ -10,7 +10,7 @@ const lerp = (a, b, t) => ({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.l
 
 test('buildRouteUrl uses bike/foot profiles with steps', () => {
   const u = buildRouteUrl('hike', [START, END]);
-  assert.match(u, /routed-foot\/route\/v1\/driving\/8\.000000,47\.000000;8\.006580,47\.002700\?/);
+  assert.match(u, /routed-foot\/route\/v1\/driving\/-121\.170000,38\.750000;-121\.164241,38\.752700\?/);
   assert.match(u, /steps=true/);
   assert.match(buildRouteUrl('bike', [START, END]), /routed-bike/);
 });
@@ -64,7 +64,7 @@ test('navigator tracks progress, announces turn, and arrives', () => {
 
 test('navigator flags off-route only after consecutive bad fixes', () => {
   const nav = new Navigator(route(), { mode: 'bike', offRouteFixes: 3 });
-  const away = { lat: START.lat - 0.001, lng: 8.003, accuracy: 5 }; // ~110 m south of the path
+  const away = { lat: START.lat - 0.001, lng: START.lng + 0.003, accuracy: 5 }; // ~110 m south of the path
   nav.update({ ...lerp(START, CORNER, 0.4), accuracy: 5 });
   assert.equal(nav.update(away).offRoute, false);
   assert.equal(nav.update(away).offRoute, false);
@@ -77,7 +77,7 @@ test('navigator flags off-route only after consecutive bad fixes', () => {
 
 test('poor GPS accuracy widens the off-route tolerance', () => {
   const nav = new Navigator(route(), { mode: 'bike', offRouteFixes: 1 });
-  const p = { lat: START.lat - 0.0005, lng: 8.003 }; // ~55 m off
+  const p = { lat: START.lat - 0.0005, lng: START.lng + 0.003 }; // ~55 m off
   assert.equal(nav.update({ ...p, accuracy: 5 }).offRoute, true);
   const nav2 = new Navigator(route(), { mode: 'bike', offRouteFixes: 1 });
   assert.equal(nav2.update({ ...p, accuracy: 60 }).offRoute, false);

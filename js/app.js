@@ -1,11 +1,13 @@
 /* global maplibregl */
-import { BASE_LAYERS, OVERLAYS, MODE_DEFAULTS } from './layers.js';
+import { BASE_LAYERS, OVERLAYS, MODE_DEFAULTS, REGION, inRegion } from './layers.js';
 import { searchPlaces, reverseGeocode } from './search.js';
 import { fetchRoutes } from './routing.js';
 import { Navigator } from './navigator.js';
 import { TrackRecorder } from './recorder.js';
 import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
-import { haversine, bearing, destination } from './geo.js';
+import { SegmentStore, segmentLabel, HIGHWAY_LABEL } from './segments.js';
+import { RATINGS, UNRATED, effectiveRating, ratingColor, exportRatings } from './ratings.js';
+import { haversine, bearing, destination, polylineLength, snapToPolyline, cumulativeDistances } from './geo.js';
 import { formatDistance, formatDuration, formatSpeed, formatClock } from './format.js';
 
 // ---------------------------------------------------------------- state ----
@@ -21,6 +23,14 @@ if (settings.view && !settings.camera) {
   settings.camera = { center: [settings.view.center[1], settings.view.center[0]], zoom: settings.view.zoom - 1 };
 }
 delete settings.view;
+// The app covers California only; a saved position elsewhere starts at Granite Bay instead.
+if (!settings.camera || !inRegion(...settings.camera.center)) settings.camera = { ...REGION.home };
+
+// Difficulty ratings: shipped defaults plus this device's own ratings (see ratings.js).
+const RATINGS_KEY = 'trailnav:ratings';
+const myRatings = load(RATINGS_KEY);
+let defaultRatings = {};
+const segmentStore = new SegmentStore();
 
 const state = {
   fix: null,            // latest GPS fix
@@ -38,6 +48,7 @@ const state = {
   wakeLock: null,
   trails: [],
   navHeading: null,     // direction of travel the map faces while navigating
+  highlight: null,      // {name, id}: highlighted trail and the tapped segment of it
 };
 
 const $ = (s) => document.querySelector(s);
@@ -77,10 +88,13 @@ const visibility = (id, shown) => (shown.has(id) ? 'visible' : 'none');
 
 const map = (() => {
   const shown = shownLayers();
+  const b = REGION.bounds;
+  const selected = ['==', ['get', 'hl'], 2]; // the tapped segment (1 = rest of the same trail)
   return new maplibregl.Map({
     container: 'map',
-    center: settings.camera?.center || [8.0, 46.5],
-    zoom: settings.camera?.zoom ?? 4,
+    center: settings.camera.center,
+    zoom: settings.camera.zoom,
+    maxBounds: [[b.west, b.south], [b.east, b.north]],
     maxZoom: 19,
     maxPitch: 70,
     style: {
@@ -89,19 +103,39 @@ const map = (() => {
         ...Object.fromEntries(Object.entries(BASE_LAYERS).map(([k, d]) => [`base-${k}`, rasterSource(d)])),
         ...Object.fromEntries(Object.entries(OVERLAYS).map(([k, d]) => [`ov-${k}`, rasterSource(d)])),
         trails: { type: 'geojson', data: EMPTY },
+        segments: { type: 'geojson', data: EMPTY },
         accuracy: { type: 'geojson', data: EMPTY },
         routes: { type: 'geojson', data: EMPTY },
         record: { type: 'geojson', data: EMPTY },
       },
       layers: [
-        ...Object.keys(BASE_LAYERS).map((k) => ({ id: `base-${k}`, source: `base-${k}`, type: 'raster', layout: { visibility: visibility(`base-${k}`, shown) } })),
+        // Base maps are faded (paler, less colour) so roads recede and the trail lines stand out.
+        ...Object.keys(BASE_LAYERS).map((k) => ({ id: `base-${k}`, source: `base-${k}`, type: 'raster', layout: { visibility: visibility(`base-${k}`, shown) },
+          paint: { 'raster-saturation': -0.75, 'raster-contrast': -0.3, 'raster-brightness-min': 0.3 } })),
         ...Object.entries(OVERLAYS).map(([k, d]) => ({ id: `ov-${k}`, source: `ov-${k}`, type: 'raster',
           layout: { visibility: visibility(`ov-${k}`, shown) }, paint: { 'raster-opacity': d.options.opacity ?? 1 } })),
+        // Signed routes from "Trails nearby": a wide amber glow under the segments, in a
+        // colour that can't be confused with a difficulty rating.
         lineLayer('trails', 'trails', {
-          'line-color': ['get', 'color'],
-          'line-width': ['match', ['get', 'look'], 'hl', 7, 4],
-          'line-opacity': ['match', ['get', 'look'], 'dim', 0.35, 0.85],
+          'line-color': '#ff9800',
+          'line-width': ['match', ['get', 'look'], 'hl', 16, 11],
+          'line-opacity': ['match', ['get', 'look'], 'hl', 0.6, 'dim', 0.15, 0.4],
         }, { layout: { 'line-sort-key': ['match', ['get', 'look'], 'hl', 1, 0] } }),
+        // Highlighted trail: a yellow glow along its whole length, visible at any zoom.
+        lineLayer('segments-hl', 'segments', {
+          'line-color': '#ffc400',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, ['case', selected, 9, 6], 16, ['case', selected, 22, 16]],
+          'line-opacity': ['case', selected, 0.95, 0.7],
+        }, { filter: ['>', ['get', 'hl'], 0] }),
+        // Every trail segment, coloured by difficulty rating (grey = not rated).
+        { ...lineLayer('segments-casing', 'segments', {
+          'line-color': '#fff', 'line-opacity': 0.9,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 12, ['case', selected, 8, 4], 16, ['case', selected, 12, 8]],
+        }, { layout: { 'line-sort-key': ['case', selected, 1, 0] } }), minzoom: 12 },
+        { ...lineLayer('segments', 'segments', {
+          'line-color': ['get', 'color'],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 12, ['case', selected, 5, 2], 16, ['case', selected, 8, 5]],
+        }, { layout: { 'line-sort-key': ['case', selected, 1, 0] } }), minzoom: 12 },
         { id: 'accuracy', source: 'accuracy', type: 'fill', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.1, 'fill-outline-color': '#1a73e8' } },
         lineLayer('route-alt', 'routes', { 'line-color': '#8aa4c8', 'line-width': 6, 'line-opacity': 0.8 }, { filter: ['==', ['get', 'active'], false] }),
         lineLayer('route-casing', 'routes', { 'line-color': '#fff', 'line-width': 10, 'line-opacity': 0.9 }, { filter: ['==', ['get', 'active'], true] }),
@@ -136,10 +170,13 @@ function applyLayers() {
   });
 }
 
+let segmentTimer = null;
 map.on('moveend', () => {
   const c = map.getCenter();
   settings.camera = { center: [c.lng, c.lat], zoom: map.getZoom() };
   save(SETTINGS_KEY, settings);
+  clearTimeout(segmentTimer);
+  segmentTimer = setTimeout(loadSegments, 300);
 });
 map.on('dragstart', () => {
   state.following = false;
@@ -150,19 +187,25 @@ map.on('click', (e) => {
   if (!els.results.hidden) { els.results.hidden = true; return; }
   // Lines are thin, so accept taps a little way off them.
   const { x, y } = e.point;
-  const hit = map.queryRenderedFeatures([[x - 10, y - 10], [x + 10, y + 10]], { layers: ['route-alt', 'trails'] })[0];
-  if (hit?.layer.id === 'route-alt') { selectRoute(hit.properties.i); return; }
-  if (hit?.layer.id === 'trails') { showTrail(state.trails[hit.properties.i]); return; }
+  const hits = map.queryRenderedFeatures([[x - 16, y - 16], [x + 16, y + 16]], { layers: ['route-alt', 'segments', 'trails'] });
+  const alt = hits.find((h) => h.layer.id === 'route-alt');
+  if (alt) { selectRoute(alt.properties.i); return; }
+  const segs = hits.filter((h) => h.layer.id === 'segments').map((h) => segmentStore.segments.get(h.properties.id)).filter(Boolean);
+  if (segs.length) { showSegment(nearestSegment(segs, e.lngLat)); return; }
+  const trail = hits.find((h) => h.layer.id === 'trails');
+  if (trail) { showTrail(state.trails[trail.properties.i]); return; }
   showPlace({ lat: e.lngLat.lat, lng: e.lngLat.lng, name: 'Dropped pin' }, { lookup: true });
 });
 
 const trailTip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'trail-tip', offset: 10 });
 whenReady(() => {
-  map.on('mousemove', 'trails', (e) => {
-    map.getCanvas().style.cursor = 'pointer';
-    trailTip.setLngLat(e.lngLat).setText(e.features[0].properties.name).addTo(map);
-  });
-  map.on('mouseleave', 'trails', () => { map.getCanvas().style.cursor = ''; trailTip.remove(); });
+  for (const layer of ['segments', 'trails']) {
+    map.on('mousemove', layer, (e) => {
+      map.getCanvas().style.cursor = 'pointer';
+      trailTip.setLngLat(e.lngLat).setText(e.features[0].properties.name).addTo(map);
+    });
+    map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; trailTip.remove(); });
+  }
 });
 
 /** While navigating: tilted, facing the direction of travel, with you low on the screen. */
@@ -296,7 +339,7 @@ async function runSearch(q) {
   searchCtl?.abort(); searchCtl = new AbortController();
   const c = map.getCenter();
   try {
-    const results = await searchPlaces(q, { near: { lat: c.lat, lng: c.lng }, signal: searchCtl.signal });
+    const results = await searchPlaces(q, { near: { lat: c.lat, lng: c.lng }, within: REGION.bounds, signal: searchCtl.signal });
     renderResults(results);
   } catch (err) {
     if (err.name !== 'AbortError') toast(err.message);
@@ -327,7 +370,10 @@ function renderResults(results) {
 }
 
 // --------------------------------------------------------- bottom sheet ----
+let sheetSeq = 0; // changes whenever the sheet's content is replaced
 function openSheet(html, onRender) {
+  sheetSeq++;
+  unselectSegment();
   els.sheetBody.innerHTML = html;
   els.sheet.hidden = false;
   document.body.classList.add('sheet-open');
@@ -335,6 +381,7 @@ function openSheet(html, onRender) {
   onRender?.(els.sheetBody);
 }
 function closeSheet() {
+  unselectSegment();
   els.sheet.hidden = true; document.body.classList.remove('sheet-open');
 }
 els.sheetClose.addEventListener('click', () => {
@@ -365,6 +412,7 @@ async function showPlace(place, { lookup = false } = {}) {
       <button class="btn primary" data-act="to">Directions</button>
       <button class="btn" data-act="from">Start here</button>
       <button class="btn" data-act="trails">Trails nearby</button>
+      <button class="btn" data-act="view-trail" hidden>View trail</button>
     </div>`, (root) => {
     root.querySelector('.place-name').textContent = place.name;
     root.querySelector('.place-sub').textContent = [place.label && place.label !== place.name ? place.label : '', dist].filter(Boolean).join(' · ');
@@ -382,12 +430,21 @@ async function showPlace(place, { lookup = false } = {}) {
       findTrails();
     };
   });
+  const mine = sheetSeq;
   if (lookup) {
     const name = await reverseGeocode(place);
-    if (name && !els.sheet.hidden) {
+    if (name && sheetSeq === mine) {
       place.name = name;
       const n = els.sheetBody.querySelector('.place-name'); if (n) n.textContent = name;
     }
+  }
+  // A spot on a named trail we have data for: highlight the whole trail.
+  if (sheetSeq !== mine || !(await segmentStore.hasName(place.name))) return;
+  const segs = await highlightTrail(place.name);
+  const btn = els.sheetBody.querySelector('[data-act="view-trail"]');
+  if (sheetSeq === mine && btn && segs.length) {
+    btn.hidden = false;
+    btn.onclick = () => showSegment(nearestSegment(segs, place));
   }
 }
 
@@ -629,17 +686,10 @@ async function findTrails() {
   }
 }
 
-function trailColor(t) {
-  // OSM colour tags are CSS names or hex, sometimes without the '#'.
-  const c = t.colour && /^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(t.colour) ? `#${t.colour}` : t.colour;
-  if (c && /^#[0-9a-f]{3,6}$|^[a-z]+$/i.test(c) && window.CSS?.supports('color', c)) return c;
-  return t.route === 'mtb' ? '#8e24aa' : t.route === 'bicycle' ? '#1565c0' : '#c62828';
-}
-
 function drawTrails(highlight = null) {
   setData('trails', fc(state.trails.map((t, i) => ({
     type: 'Feature',
-    properties: { i, name: t.name, color: trailColor(t), look: highlight === t ? 'hl' : highlight ? 'dim' : '' },
+    properties: { i, name: t.name, look: highlight === t ? 'hl' : highlight ? 'dim' : '' },
     geometry: { type: 'MultiLineString', coordinates: t.lines.map((line) => line.map(ll)) },
   }))));
 }
@@ -654,7 +704,6 @@ function renderTrailList() {
     for (const t of state.trails) {
       const li = document.createElement('li');
       li.innerHTML = `<span class="swatch"></span><div><b class="n"></b><div class="muted meta"></div></div>`;
-      li.querySelector('.swatch').style.background = trailColor(t);
       li.querySelector('.n').textContent = t.name;
       li.querySelector('.meta').textContent = trailMeta(t);
       li.onclick = () => showTrail(t);
@@ -695,6 +744,101 @@ function showTrail(t) {
 }
 
 $('#btn-trails').addEventListener('click', findTrails);
+
+// ------------------------------------------------- trail segments & ratings ----
+async function loadSegments() {
+  if (map.getZoom() < 12) return;
+  const b = map.getBounds();
+  if (await segmentStore.loadBounds({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() })) drawSegments();
+}
+
+function drawSegments() {
+  const h = state.highlight;
+  setData('segments', fc([...segmentStore.segments.values()].map((s) => lineFeature(s.coords, {
+    id: s.id,
+    name: segmentLabel(s),
+    color: ratingColor(effectiveRating(s.id, defaultRatings, myRatings).rating),
+    hl: !h ? 0 : s.id === h.id ? 2 : h.name && s.name === h.name ? 1 : 0,
+  }))));
+}
+
+function unselectSegment() {
+  if (!state.highlight) return;
+  state.highlight = null;
+  drawSegments();
+}
+
+/** Highlight a whole named trail (loading every tile it runs through). */
+async function highlightTrail(name, id = null) {
+  state.highlight = { name, id };
+  drawSegments();
+  const segs = name ? await segmentStore.loadTrail(name) : [];
+  if (state.highlight?.name === name) drawSegments();
+  return segs;
+}
+
+function nearestSegment(segs, p) {
+  const d = (s) => snapToPolyline({ lat: p.lat, lng: p.lng }, s.coords, cumulativeDistances(s.coords)).distance;
+  return segs.reduce((best, s) => (d(s) < d(best) ? s : best));
+}
+
+function ratingText(id) {
+  const { rating, source } = effectiveRating(id, defaultRatings, myRatings);
+  if (!rating) return source === 'you' ? 'Not rated (you removed the default rating)' : 'Not rated';
+  const r = RATINGS[rating];
+  return `${r.label} · ${r.meaning} · ${source === 'you' ? 'your rating' : 'TrailNav default'}`;
+}
+
+async function showSegment(seg, { fit = true } = {}) {
+  const { rating } = effectiveRating(seg.id, defaultRatings, myRatings);
+  const choices = [...Object.entries(RATINGS), ['unrated', UNRATED]];
+  openSheet(`
+    <h2 class="n"></h2>
+    <div class="muted meta"></div>
+    <div class="muted trail-len"></div>
+    <h3>This segment</h3>
+    <div class="rating-now"><span class="swatch"></span><span class="txt"></span></div>
+    <div class="rate-buttons">
+      ${choices.map(([k, r]) => `<button class="rate" data-r="${k}" aria-pressed="${(rating || 'unrated') === k}"><span class="swatch" style="background:${r.color}"></span>${r.label}</button>`).join('')}
+    </div>
+    <label class="same" hidden><input type="checkbox" id="rate-all"> <span></span></label>
+    <div class="row actions"><button class="btn" id="rate-reset" hidden>Use TrailNav default</button></div>`, (root) => {
+    root.querySelector('.n').textContent = segmentLabel(seg);
+    root.querySelector('.meta').textContent = `${HIGHWAY_LABEL[seg.kind] || 'Trail'} · this segment ${formatDistance(polylineLength(seg.coords), settings.units)}`;
+    root.querySelector('.rating-now .swatch').style.background = ratingColor(rating);
+    root.querySelector('.rating-now .txt').textContent = ratingText(seg.id);
+    root.querySelector('#rate-reset').hidden = !myRatings[seg.id];
+    root.querySelectorAll('.rate').forEach((b) => (b.onclick = () => {
+      const targets = root.querySelector('#rate-all').checked ? segmentStore.named(seg.name) : [seg];
+      for (const s of targets) {
+        // Only store what differs from the shipped default.
+        const def = effectiveRating(s.id, defaultRatings, {}).rating || 'unrated';
+        if (b.dataset.r === def) delete myRatings[s.id];
+        else myRatings[s.id] = { rating: b.dataset.r, name: s.name };
+      }
+      save(RATINGS_KEY, myRatings);
+      showSegment(seg, { fit: false });
+    }));
+    root.querySelector('#rate-reset').onclick = () => { delete myRatings[seg.id]; save(RATINGS_KEY, myRatings); showSegment(seg, { fit: false }); };
+  });
+
+  // Highlight the whole trail and show all of it.
+  const root = els.sheetBody;
+  const named = seg.name ? await highlightTrail(seg.name, seg.id) : (await highlightTrail(null, seg.id), [seg]);
+  if (state.highlight?.id !== seg.id) return; // another trail was tapped meanwhile
+  if (named.length > 1) {
+    root.querySelector('.trail-len').textContent = `Whole trail ${formatDistance(named.reduce((d, s) => d + polylineLength(s.coords), 0), settings.units)} in ${named.length} segments (highlighted)`;
+    const label = root.querySelector('.same');
+    label.hidden = false;
+    label.querySelector('span').textContent = `Apply to all ${named.length} segments of “${seg.name}”`;
+  }
+  if (fit) fitTo(named.flatMap((s) => s.coords), { top: 60, left: 40, right: 40, bottom: els.sheet.offsetHeight + 20 });
+}
+
+function exportMyRatings() {
+  const json = JSON.stringify(exportRatings(defaultRatings, myRatings), null, 2);
+  download('trail-ratings.json', `${json}\n`, 'application/json');
+}
 
 // ------------------------------------------------------------ recording ----
 $('#btn-record').addEventListener('click', () => {
@@ -766,10 +910,16 @@ $('#btn-layers').addEventListener('click', () => {
       ${Object.entries(BASE_LAYERS).map(([k, d]) => `<label><input type="radio" name="base" value="${k}" ${k === base ? 'checked' : ''}> ${d.name}</label>`).join('')}
       <h3>Trail overlays</h3>
       ${Object.entries(OVERLAYS).map(([k, d]) => `<label><input type="checkbox" name="ov" value="${k}" ${overlays.includes(k) ? 'checked' : ''}> ${d.name}</label>`).join('')}
+      <h3>Trail difficulty</h3>
+      <div class="legend">${[...Object.values(RATINGS), UNRATED].map((r) => `<span><i style="background:${r.color}"></i>${r.label}</span>`).join('')}</div>
+      <p class="muted note">Zoom in and tap a trail to rate it. Grey only means nobody has rated it yet. It says nothing about how hard the trail is.</p>
+      <div class="row"><span>Your ratings on this device: <b id="my-count"></b></span><button class="btn" id="export-ratings">Export</button></div>
       <h3>Navigation</h3>
       <label>Units <select id="units"><option value="metric">Metric (km)</option><option value="imperial">Imperial (mi)</option></select></label>
       <label><input type="checkbox" id="voice" ${settings.voice ? 'checked' : ''}> Voice directions</label>
     </div>`, (root) => {
+    root.querySelector('#my-count').textContent = Object.keys(myRatings).length;
+    root.querySelector('#export-ratings').onclick = exportMyRatings;
     root.querySelector('#units').value = settings.units;
     root.querySelectorAll('input[name="base"]').forEach((i) => (i.onchange = () => { settings.base = i.value; persistLayers(); }));
     root.querySelectorAll('input[name="ov"]').forEach((i) => (i.onchange = () => {
@@ -811,6 +961,11 @@ function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } ca
 syncModeUI();
 applyLayers();
 startGPS();
+whenReady(loadSegments);
+fetch('data/trail-ratings.json')
+  .then((r) => (r.ok ? r.json() : {}))
+  .then((json) => { defaultRatings = json.ratings || {}; drawSegments(); })
+  .catch(() => { /* offline and not cached: own ratings still apply */ });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }

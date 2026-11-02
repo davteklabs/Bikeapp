@@ -3,9 +3,10 @@
 import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from '../../scripts/serve.mjs';
-import { osrmResponse, overpassResponse, START, CORNER, END } from '../fixtures.mjs';
+import { tilesInBounds, tileKey } from '../../js/segments.js';
+import { osrmResponse, overpassResponse, segmentTile, START, CORNER, END } from '../fixtures.mjs';
 
 function loadPlaywright() {
   const require = createRequire(import.meta.url);
@@ -43,6 +44,16 @@ await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
   if (url.includes('overpass')) { calls.overpass++; return json(overpassResponse()); }
   return route.abort();
 });
+// Shipped trail data and default ratings: one blue-rated segment, the rest unrated.
+const segmentKeys = tilesInBounds({ south: 38.7, west: -121.25, north: 38.8, east: -121.1 }).map((t) => tileKey(t.row, t.col));
+await context.route(/\/data\/(trails\/|trail-ratings\.json)/, (route) => {
+  const url = route.request().url();
+  const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+  if (url.endsWith('/trail-ratings.json')) return json({ ratings: { 1001: 'blue' } });
+  if (url.endsWith('/index.json')) return json({ v: 1, tiles: segmentKeys, regions: [] });
+  if (url.endsWith('/names.json')) return json({ 'Ridge Trail': segmentKeys });
+  return json(segmentTile());
+});
 
 const page = await context.newPage();
 await page.addInitScript(() => {
@@ -69,6 +80,36 @@ try {
   await page.waitForSelector('.me-marker', { timeout: 10000 });
   ok('map loads and shows GPS position');
   await snap(page, '1-map');
+
+  const segProps = () => page.evaluate(() => Object.fromEntries(
+    window.trailnav.map.querySourceFeatures('segments').map((f) => [f.properties.id, f.properties])));
+  await page.waitForFunction(() => window.trailnav.map.querySourceFeatures('segments').length >= 3, null, { timeout: 10000 });
+  let segs = await segProps();
+  assert.equal(segs['1001'].color, '#1565c0', 'default rating shows blue');
+  assert.equal(segs['1002'].color, '#6b7076', 'unrated shows grey');
+  assert.equal(segs['1003'].color, '#6b7076', 'unrated shows grey');
+  ok('trail segments load, coloured only where rated (default blue, others grey)');
+
+  // Tap the second half of Ridge Trail.
+  const tap = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), { lng: CORNER.lng, lat: (CORNER.lat + 3 * END.lat) / 4 });
+  await page.mouse.click(tap.x, tap.y);
+  await page.waitForSelector('#sheet .rate-buttons');
+  assert.equal(await page.textContent('#sheet h2'), 'Ridge Trail');
+  await page.waitForFunction(() => /in 2 segments/.test(document.querySelector('#sheet .trail-len')?.textContent || ''));
+  await page.waitForTimeout(800);
+  segs = await segProps();
+  assert.equal(segs['1002'].hl, 2, 'tapped segment highlighted');
+  assert.equal(segs['1001'].hl, 1, 'rest of the trail highlighted');
+  assert.ok(!segs['1003']?.hl, 'other trails not highlighted');
+  ok('tapping a trail highlights the whole trail');
+  await snap(page, '1b-trail');
+
+  await page.click('#sheet .rate[data-r="black"]');
+  await page.waitForFunction(() => window.trailnav.map.querySourceFeatures('segments').some((f) => f.properties.id === '1002' && f.properties.color === '#111111'));
+  assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('trailnav:ratings'))))['1002'].rating, 'black');
+  assert.match(await page.textContent('#sheet .rating-now'), /Black · Difficult · your rating/);
+  ok('rating a segment recolours it and saves it on this device');
+  await page.click('#sheet-close');
 
   await page.fill('#search', 'Ridge');
   await page.waitForSelector('#search-results li .name');
@@ -146,6 +187,11 @@ try {
   await page.waitForSelector('#sheet .settings');
   await snap(page, '6-layers');
   ok('layers & settings panel');
+
+  const [exp] = await Promise.all([page.waitForEvent('download'), page.click('#export-ratings')]);
+  const exported = JSON.parse(readFileSync(await exp.path(), 'utf8'));
+  assert.deepEqual(exported.ratings, { 1001: { rating: 'blue' }, 1002: { rating: 'black', name: 'Ridge Trail' } });
+  ok('ratings export in the same format as the shipped defaults file');
 
   await page.selectOption('#units', 'imperial');
   await page.click('#btn-trails');

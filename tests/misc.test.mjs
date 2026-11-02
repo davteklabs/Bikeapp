@@ -38,6 +38,6 @@ test('trails: query + parse Overpass relations', () => {
   assert.equal(t.name, 'Panorama Loop');
   assert.equal(t.lines.length, 2);
   assert.equal(t.distanceTag, 7500);
-  const near = nearestPointOnTrail({ lat: 47.0031, lng: 8.0041 }, t);
+  const near = nearestPointOnTrail({ lat: 38.7531, lng: -121.1659 }, t);
   assert.ok(near.distance < 20, near.distance);
 });

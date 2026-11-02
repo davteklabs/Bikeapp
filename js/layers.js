@@ -38,8 +38,21 @@ export const OVERLAYS = {
   },
 };
 
-/** Sensible defaults per activity. */
+/**
+ * Defaults per activity. The route overlays are off by default: their coloured
+ * highlights (often blue) could be mistaken for difficulty ratings.
+ */
+// Bike uses the OSM standard map: its tile servers answered in ~0.2-0.5 s versus
+// CyclOSM's 0.6-4 s when measured, and trails are drawn by the app on top anyway.
 export const MODE_DEFAULTS = {
-  bike: { base: 'cyclosm', overlays: ['cycling', 'mtb'] },
-  hike: { base: 'topo', overlays: ['hiking'] },
+  bike: { base: 'osm', overlays: [] },
+  hike: { base: 'topo', overlays: [] },
 };
+
+/** The app covers California only, opening at Granite Bay. */
+export const REGION = {
+  name: 'California',
+  bounds: { south: 32.3, west: -124.7, north: 42.2, east: -113.9 },
+  home: { center: [-121.165, 38.755], zoom: 12 },
+};
+export const inRegion = (lng, lat, b = REGION.bounds) => lat >= b.south && lat <= b.north && lng >= b.west && lng <= b.east;

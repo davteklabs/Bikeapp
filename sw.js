@@ -8,8 +8,11 @@ const SHELL_FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'vendor/maplibre-gl/maplibre-gl.css', 'vendor/maplibre-gl/maplibre-gl.js',
   'js/app.js', 'js/geo.js', 'js/format.js', 'js/instructions.js', 'js/routing.js', 'js/navigator.js',
-  'js/recorder.js', 'js/trails.js', 'js/search.js', 'js/layers.js',
+  'js/recorder.js', 'js/trails.js', 'js/search.js', 'js/layers.js', 'js/segments.js', 'js/ratings.js',
+  'data/trail-ratings.json', 'data/trails/index.json', 'data/trails/names.json',
 ];
+// Trail segment tiles (data/trails/tiles/*) are same-origin, so they're cached as
+// they're viewed by the app-shell handler below and keep working offline.
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
