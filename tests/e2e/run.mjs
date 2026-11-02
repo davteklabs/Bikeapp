@@ -63,6 +63,10 @@ await context.route(/\/data\/(trails\/|trail-info\.json)/, (route) => {
 });
 
 const page = await context.newPage();
+// CPU_THROTTLE=4 runs the page 4x slower, to reproduce slow CI machines locally.
+if (process.env.CPU_THROTTLE) {
+  await (await context.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.CPU_THROTTLE) });
+}
 await page.addInitScript(() => {
   // The checks below are written in metric; imperial is covered at the end.
   localStorage.setItem('trailnav:settings', JSON.stringify({ units: 'metric', unitsChosen: true }));
@@ -212,8 +216,23 @@ try {
   // Plan route mode: tap trails in order; start from GPS (START, 500 m west of the trail).
   await page.click('#view-toggle [data-view="plan"]');
   await page.waitForSelector('#sheet .plan-row');
+  // Tap a map point, first panning it into the clear space between the top bar and the
+  // plan panel (whose height depends on the platform's fonts).
   const tapAt = async (p) => {
-    const pt = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), p);
+    const project = () => page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), p);
+    const free = await page.evaluate(() => ({
+      top: document.querySelector('#topbar').getBoundingClientRect().bottom + 20,
+      bottom: (document.querySelector('#sheet').hidden ? innerHeight : document.querySelector('#sheet').getBoundingClientRect().top) - 20,
+    }));
+    let pt = await project();
+    if (pt.y < free.top || pt.y > free.bottom) {
+      await page.evaluate(({ q, y }) => {
+        const m = window.trailnav.map;
+        m.panBy([0, m.project([q.lng, q.lat]).y - y], { animate: false });
+      }, { q: p, y: (free.top + free.bottom) / 2 });
+      await page.waitForTimeout(500);
+      pt = await project();
+    }
     await page.mouse.click(pt.x, pt.y);
     await page.waitForTimeout(250);
   };
@@ -358,6 +377,11 @@ try {
 } catch (err) {
   await snap(page, 'failure');
   console.error('E2E FAILED:', err.message, '\nconsole errors:', errors);
+  // On GitHub Actions, also report it as an annotation, which is readable without access to the logs.
+  if (process.env.GITHUB_ACTIONS) {
+    const msg = `step ${step + 1}: ${err.message} | console errors: ${errors.join(' / ')}`.replace(/%/g, '%25').replace(/\r?\n/g, '%0A');
+    console.log(`::error title=e2e failed::${msg}`);
+  }
   process.exitCode = 1;
 } finally {
   await browser.close();
