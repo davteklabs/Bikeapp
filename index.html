@@ -57,6 +57,9 @@
 
   <!-- Floating buttons -->
   <div id="fabs">
+    <button class="fab" id="btn-draw" aria-label="Draw a trail" title="Draw a trail">
+      <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+    </button>
     <button class="fab" id="btn-layers" aria-label="Map layers & settings" title="Layers & settings">
       <svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5zm-7.6 8.8L2 13l10 5 10-5-2.4-1.2L12 15.6l-7.6-3.8zm0 4.5L2 17.5l10 5 10-5-2.4-1.2L12 20.1l-7.6-3.8z"/></svg>
     </button>
@@ -80,6 +83,24 @@
     <button id="btn-end" class="btn danger">End</button>
   </section>
   <button id="btn-recenter" class="pill" hidden>⌖ Re-center</button>
+
+  <!-- Drawing a trail -->
+  <section id="draw-bar" class="card" hidden>
+    <div class="draw-tools mode-toggle" role="radiogroup" aria-label="Drawing tool">
+      <button type="button" data-tool="pen" role="radio" aria-checked="true">✏️ Draw</button>
+      <button type="button" data-tool="erase" role="radio" aria-checked="false">🧽 Erase</button>
+      <button type="button" data-tool="move" role="radio" aria-checked="false" title="Move the map">✋ Move</button>
+    </div>
+    <div class="draw-row">
+      <label class="snap"><input type="checkbox" id="draw-snap" checked> Snap to paths &amp; roads</label>
+      <span id="draw-len" class="muted"></span>
+    </div>
+    <div class="draw-row">
+      <button type="button" class="btn" id="draw-undo">↶ Undo</button>
+      <button type="button" class="btn" id="draw-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="draw-save">Save trail</button>
+    </div>
+  </section>
 
   <!-- Bottom sheet hosting panels -->
   <section id="sheet" class="card" hidden>

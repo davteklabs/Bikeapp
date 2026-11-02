@@ -45,8 +45,8 @@ const wayQuery = (b) => `[out:json][timeout:300][maxsize:1073741824];(
   way["highway"~"^(service|unclassified|residential|road)$"]["surface"~"^(${UNPAVED})$"](${b});
   way["highway"="service"]["tracktype"](${b});
 );out tags geom;`;
-// The busy public servers time out on one big area, so ask in chunks of 2x2 tiles.
-const CHUNK = 2;
+// The busy public servers time out on bigger areas, so ask one tile at a time.
+const CHUNK = 1;
 const chunks = new Map();
 for (const t of grid) {
   const k = `${Math.floor(t.row / CHUNK)}_${Math.floor(t.col / CHUNK)}`;

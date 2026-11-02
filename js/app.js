@@ -8,6 +8,7 @@ import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
 import { SegmentStore, segmentLabel, HIGHWAY_LABEL } from './segments.js';
 import { togglePlanned, planIndex, planLength, midpoint } from './plan.js';
 import { planPieces, chainSegments, assembleRoute, TRAIL_SPEED, JOIN_GAP } from './trailroute.js';
+import { snapToLines, assembleStroke, densify, eraseAt, simplify, strokeLength } from './draw.js';
 import { RATINGS, UNRATED, effectiveRating, ratingColor, effectiveName, exportTrailInfo } from './trail-info.js';
 import { haversine, bearing, destination, polylineLength, snapToPolyline, cumulativeDistances, pointAlong } from './geo.js';
 import { formatDistance, formatDuration, formatSpeed, formatClock } from './format.js';
@@ -73,7 +74,7 @@ const els = {
   banner: $('#nav-banner'), navIcon: $('#nav-icon'), navDist: $('#nav-dist'), navText: $('#nav-text'), navThen: $('#nav-then'),
   footer: $('#nav-footer'), navRemaining: $('#nav-remaining'), navEta: $('#nav-eta'), navSpeed: $('#nav-speed'),
   offroute: $('#offroute'), recenter: $('#btn-recenter'), mute: $('#btn-mute'),
-  planBar: $('#plan-bar'), planText: $('#plan-text'),
+  planBar: $('#plan-bar'), planText: $('#plan-text'), drawBar: $('#draw-bar'),
 };
 
 // ------------------------------------------------------------------ map ----
@@ -118,7 +119,8 @@ const map = (() => {
       sources: {
         ...Object.fromEntries(Object.entries(BASE_LAYERS).map(([k, d]) => [`base-${k}`, rasterSource(d)])),
         ...Object.fromEntries(Object.entries(OVERLAYS).map(([k, d]) => [`ov-${k}`, rasterSource(d)])),
-        water: WATER.source,
+        ofm: WATER.source, // water, plus paths and roads used for snapping drawn trails
+        draw: { type: 'geojson', data: EMPTY },
         trails: { type: 'geojson', data: EMPTY },
         segments: { type: 'geojson', data: EMPTY },
         plan: { type: 'geojson', data: EMPTY },
@@ -134,15 +136,15 @@ const map = (() => {
           layout: { visibility: visibility(`ov-${k}`, shown) }, paint: { 'raster-opacity': d.options.opacity ?? 1 } })),
         // Water on top of the faded base: lakes filled, rivers/canals/creeks as lines,
         // seasonal ones paler or dashed. Culverts (tunnels) aren't drawn.
-        { id: 'water', source: 'water', 'source-layer': 'water', type: 'fill',
+        { id: 'water', source: 'ofm', 'source-layer': 'water', type: 'fill',
           filter: ['all', ['!=', ['get', 'class'], 'swimming_pool'], ['!=', ['get', 'brunnel'], 'tunnel']],
           paint: { 'fill-pattern': 'water-waves', 'fill-opacity': ['case', ['==', ['get', 'intermittent'], 1], 0.55, 1] } },
-        { id: 'water-edge', source: 'water', 'source-layer': 'water', type: 'line',
+        { id: 'water-edge', source: 'ofm', 'source-layer': 'water', type: 'line',
           filter: ['all', ['!=', ['get', 'class'], 'swimming_pool'], ['!=', ['get', 'brunnel'], 'tunnel']],
           paint: { 'line-color': WATER.outline, 'line-width': 1 } },
         ...[['waterway', ['!=', ['get', 'intermittent'], 1], {}], ['waterway-seasonal', ['==', ['get', 'intermittent'], 1], { 'line-dasharray': [2, 2] }]]
           .map(([id, seasonal, extra]) => ({
-            id, source: 'water', 'source-layer': 'waterway', type: 'line', minzoom: 8,
+            id, source: 'ofm', 'source-layer': 'waterway', type: 'line', minzoom: 8,
             filter: ['all', seasonal, ['!=', ['get', 'brunnel'], 'tunnel']],
             layout: { 'line-join': 'round', 'line-cap': extra['line-dasharray'] ? 'butt' : 'round' },
             paint: {
@@ -153,6 +155,9 @@ const map = (() => {
               ...extra,
             },
           })),
+        // Every path and road, invisible: only queried to snap drawn trails (shown while drawing).
+        { id: 'snap-ways', source: 'ofm', 'source-layer': 'transportation', type: 'line', layout: { visibility: 'none' },
+          paint: { 'line-opacity': 0, 'line-width': 12 } },
         // Signed routes from "Trails nearby": a wide amber glow under the segments, in a
         // colour that can't be confused with a difficulty rating.
         lineLayer('trails', 'trails', {
@@ -184,6 +189,9 @@ const map = (() => {
             'line-width': ['interpolate', ['linear'], ['zoom'], 12, ['case', selected, 5, 2], 16, ['case', selected, 8, 5]],
             ...extra,
           }, { filter, layout: { 'line-sort-key': ['case', selected, 1, 0], ...(extra['line-dasharray'] && { 'line-cap': 'butt' }) } }), minzoom: 12 })),
+        // A trail being drawn: orange with a white edge; the stroke in progress is lighter.
+        lineLayer('draw-casing', 'draw', { 'line-color': '#fff', 'line-width': 9, 'line-opacity': 0.95 }),
+        lineLayer('draw-line', 'draw', { 'line-color': '#ff6d00', 'line-width': 5, 'line-opacity': ['case', ['get', 'live'], 0.6, 1] }),
         { id: 'accuracy', source: 'accuracy', type: 'fill', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.1, 'fill-outline-color': '#1a73e8' } },
         lineLayer('route-alt', 'routes', { 'line-color': '#8aa4c8', 'line-width': 6, 'line-opacity': 0.8 }, { filter: ['==', ['get', 'active'], false] }),
         lineLayer('route-casing', 'routes', { 'line-color': '#fff', 'line-width': 10, 'line-opacity': 0.9 }, { filter: ['==', ['get', 'active'], true] }),
@@ -255,7 +263,7 @@ let hold = null, holdHandled = false;
 function startHold(e) {
   holdHandled = false; // a new press: any click from an earlier hold has already gone by
   cancelHold();
-  if (state.nav || !mapReady || e.points?.length > 1) return;
+  if (state.nav || !mapReady || draw.on || e.points?.length > 1) return;
   const { point, lngLat } = e;
   hold = { x: point.x, y: point.y, timer: setTimeout(() => { hold = null; holdAt(point, lngLat); }, HOLD_MS) };
 }
@@ -286,6 +294,7 @@ map.getCanvasContainer().addEventListener('contextmenu', (e) => e.preventDefault
 
 map.on('click', (e) => {
   if (holdHandled) { holdHandled = false; return; }
+  if (draw.on) return;
   if (state.nav || !mapReady) return;
   if (!els.results.hidden) { els.results.hidden = true; return; }
   // Lines are thin, so accept taps a little way off them.
@@ -995,6 +1004,7 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     </div>
     <label class="same" hidden><input type="checkbox" id="rate-all"> <span></span></label>
     <div class="row actions"><button class="btn" id="rate-reset" hidden>Use TrailNav default rating</button></div>
+    <div class="row actions"><button class="btn danger" id="seg-delete" hidden>Delete this drawn trail</button></div>
     </div>`, (root) => {
     root.querySelector('.n').textContent = labelOf(seg);
     root.querySelector('#seg-edit').onclick = (e) => {
@@ -1003,8 +1013,11 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
       e.currentTarget.setAttribute('aria-expanded', String(!panel.hidden));
       if (!panel.hidden) panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     };
-    root.querySelector('.meta').textContent = `${HIGHWAY_LABEL[seg.kind] || 'Trail'} · this segment ${formatDistance(polylineLength(seg.coords), settings.units)}`;
-    root.querySelector('.name-src').textContent = NAME_SOURCE[effectiveName(seg.id, seg.name, defaultInfo, myNames).source] || 'No name in the map data';
+    root.querySelector('.meta').textContent = `${HIGHWAY_LABEL[seg.kind] || 'Trail'}${seg.custom ? ' · drawn' : ''} · this segment ${formatDistance(polylineLength(seg.coords), settings.units)}`;
+    const src = effectiveName(seg.id, seg.name, defaultInfo, myNames).source;
+    root.querySelector('.name-src').textContent = seg.custom && src === 'map' ? (seg.custom === 'mine' ? 'Name you gave when drawing' : 'Name from TrailNav') : NAME_SOURCE[src] || (seg.custom ? 'No name yet' : 'No name in the map data');
+    const del = root.querySelector('#seg-delete');
+    if (seg.custom === 'mine') { del.hidden = false; del.onclick = () => deleteCustom(seg); }
 
     // Navigate along this trail: plan it (all of it, in order from the end nearest your
     // start) and open the plan, where the start and end can be adjusted.
@@ -1074,6 +1087,186 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     }
   }
   if (fit) fitTo(named.flatMap((s) => s.coords), { top: 60, left: 40, right: 40, bottom: els.sheet.offsetHeight + 20 });
+}
+
+// --------------------------------------------------------------- drawing ----
+// Draw a trail with a finger: pen, eraser and move tools, undo, and snapping to lines
+// already on the map (on by default) or freehand. Saved trails become segments like
+// any other: they can be rated, named, planned and navigated, and are exported.
+const CUSTOM_KEY = 'trailnav:custom';
+const myCustom = load(CUSTOM_KEY); // {id: {name, kind, coords: [[lng, lat]], createdAt}}
+let customDefaults = {};
+const SNAP_PX = 18, ERASE_PX = 16;
+const draw = { on: false, tool: 'pen', snap: true, strokes: [], history: [], live: null, pointers: new Set(), erasing: false };
+
+function customSegment(id, c, shipped) {
+  return { id, name: c.name || '', kind: c.kind || 'p', coords: c.coords.map(([lng, lat]) => ({ lat, lng })), custom: shipped ? 'default' : 'mine' };
+}
+function addCustomSegments() {
+  for (const [id, c] of Object.entries(customDefaults)) segmentStore.segments.set(id, customSegment(id, c, true));
+  for (const [id, c] of Object.entries(myCustom)) segmentStore.segments.set(id, customSegment(id, c, false));
+  drawSegments();
+}
+
+const metersPerPixel = (lat) => (40075016.686 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom());
+
+function setDrawing(on) {
+  if (on === draw.on) return;
+  draw.on = on;
+  document.body.classList.toggle('drawing', on);
+  $('#btn-draw').classList.toggle('active', on);
+  els.drawBar.hidden = !on;
+  draw.strokes = []; draw.history = []; draw.live = null;
+  if (on) {
+    if (state.view === 'plan') setView('explore');
+    closeSheet();
+    setTool('pen');
+    toast(draw.snap ? 'Drag to draw. Your line snaps to paths and roads.' : 'Drag to draw.');
+  } else {
+    map.dragPan.enable();
+  }
+  whenReady(() => map.setLayoutProperty('snap-ways', 'visibility', on ? 'visible' : 'none'));
+  renderDraw();
+}
+$('#btn-draw').addEventListener('click', () => {
+  if (!draw.on) setDrawing(true);
+  else if (!draw.strokes.length || confirm('Discard your drawing?')) setDrawing(false);
+});
+
+function setTool(tool) {
+  draw.tool = tool;
+  // One-finger drags draw or erase; the Move tool gives them back to the map.
+  if (tool === 'move') map.dragPan.enable(); else map.dragPan.disable();
+  document.querySelectorAll('#draw-bar [data-tool]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.tool === tool)));
+  document.body.dataset.drawTool = tool;
+}
+document.querySelectorAll('#draw-bar [data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+$('#draw-snap').addEventListener('change', (e) => { draw.snap = e.target.checked; });
+
+function eventPoint(e) {
+  const r = map.getCanvasContainer().getBoundingClientRect();
+  const px = { x: e.clientX - r.left, y: e.clientY - r.top };
+  const ll = map.unproject([px.x, px.y]);
+  return { px, p: { lat: ll.lat, lng: ll.lng } };
+}
+
+/** Nearest map line under the finger: trail segments first, then other paths and roads. */
+function snapHere(px, p) {
+  const box = [[px.x - SNAP_PX, px.y - SNAP_PX], [px.x + SNAP_PX, px.y + SNAP_PX]];
+  const max = SNAP_PX * metersPerPixel(p.lat);
+  const lines = (layers) => map.queryRenderedFeatures(box, { layers }).flatMap((f) => {
+    const g = f.geometry;
+    const parts = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+    return parts.map((c) => ({ key: `${c[0]}|${c[c.length - 1]}|${c.length}`, coords: c.map(([lng, lat]) => ({ lat, lng })) }));
+  });
+  return snapToLines(p, lines(SEGMENT_LAYERS), max) || snapToLines(p, lines(['snap-ways']), max);
+}
+
+function addSample(e) {
+  const { px, p } = eventPoint(e);
+  const last = draw.live[draw.live.length - 1];
+  if (last && Math.hypot(px.x - last.px.x, px.y - last.px.y) < 6) return;
+  draw.live.push({ p, px, snap: draw.snap ? snapHere(px, p) : null });
+  renderDraw();
+}
+
+function eraseHere(e) {
+  const { p } = eventPoint(e);
+  draw.strokes = eraseAt(draw.strokes, p, ERASE_PX * metersPerPixel(p.lat));
+  renderDraw();
+}
+
+const drawSurface = map.getCanvasContainer();
+drawSurface.addEventListener('pointerdown', (e) => {
+  if (!draw.on || draw.tool === 'move') return;
+  draw.pointers.add(e.pointerId);
+  if (draw.pointers.size > 1) { draw.live = null; draw.erasing = false; renderDraw(); return; } // two fingers: moving the map
+  drawSurface.setPointerCapture(e.pointerId);
+  if (draw.tool === 'pen') { draw.live = []; addSample(e); }
+  else { draw.history.push(draw.strokes); draw.erasing = true; eraseHere(e); }
+});
+drawSurface.addEventListener('pointermove', (e) => {
+  if (!draw.on || draw.pointers.size !== 1) return;
+  if (draw.tool === 'pen' && draw.live) addSample(e);
+  else if (draw.tool === 'erase' && draw.erasing) eraseHere(e);
+});
+const endStroke = (e) => {
+  draw.pointers.delete(e.pointerId);
+  if (!draw.on) return;
+  if (draw.live) {
+    const coords = densify(assembleStroke(draw.live), 4);
+    if (strokeLength(coords) > 3) { draw.history.push(draw.strokes); draw.strokes = [...draw.strokes, coords]; }
+    draw.live = null;
+  }
+  draw.erasing = false;
+  renderDraw();
+};
+drawSurface.addEventListener('pointerup', endStroke);
+drawSurface.addEventListener('pointercancel', endStroke);
+
+function renderDraw() {
+  const lines = draw.strokes.map((s) => lineFeature(s, { live: false }));
+  if (draw.live?.length > 1) lines.push(lineFeature(assembleStroke(draw.live), { live: true }));
+  setData('draw', fc(lines));
+  const total = draw.strokes.reduce((d, s) => d + strokeLength(s), 0);
+  $('#draw-len').textContent = total ? `${formatDistance(total, settings.units)} drawn` : '';
+  $('#draw-undo').disabled = !draw.history.length;
+  $('#draw-save').disabled = !draw.strokes.length;
+}
+
+$('#draw-undo').addEventListener('click', () => {
+  if (!draw.history.length) return;
+  draw.strokes = draw.history.pop();
+  renderDraw();
+});
+$('#draw-cancel').addEventListener('click', () => {
+  if (!draw.strokes.length || confirm('Discard your drawing?')) setDrawing(false);
+});
+$('#draw-save').addEventListener('click', () => {
+  if (!draw.strokes.length) return;
+  openSheet(`
+    <h2>Save drawn trail</h2>
+    <form class="rename" id="draw-form">
+      <input id="draw-name" maxlength="80" placeholder="Trail name (optional)" autocomplete="off" enterkeyhint="done">
+      <label class="plan-row">Type <select id="draw-kind">
+        <option value="p">Path</option><option value="r">Dirt road</option><option value="t">Track</option><option value="f">Footway</option>
+      </select></label>
+      <div class="row">
+        <button class="btn primary" type="submit">Save</button>
+        <button class="btn" type="button" id="draw-back">Keep drawing</button>
+      </div>
+    </form>`, (root) => {
+    root.querySelector('#draw-back').onclick = () => closeSheet();
+    root.querySelector('#draw-form').onsubmit = (e) => {
+      e.preventDefault();
+      const name = root.querySelector('#draw-name').value.trim();
+      const kind = root.querySelector('#draw-kind').value;
+      const base = `d${Date.now().toString(36)}`;
+      const ids = draw.strokes.map((stroke, i) => {
+        const id = draw.strokes.length > 1 ? `${base}-${i + 1}` : base;
+        const coords = simplify(stroke, 1.5).map((p) => [Math.round(p.lng * 1e6) / 1e6, Math.round(p.lat * 1e6) / 1e6]);
+        myCustom[id] = { name, kind, coords, createdAt: new Date().toISOString() };
+        segmentStore.segments.set(id, customSegment(id, myCustom[id], false));
+        return id;
+      });
+      save(CUSTOM_KEY, myCustom);
+      setDrawing(false);
+      drawSegments();
+      toast(`Saved ${name || 'your trail'}`);
+      showSegment(segmentStore.segments.get(ids[0]));
+    };
+    root.querySelector('#draw-name').focus();
+  });
+});
+
+function deleteCustom(seg) {
+  if (!confirm(`Delete the drawn trail “${labelOf(seg)}”?`)) return;
+  delete myCustom[seg.id];
+  save(CUSTOM_KEY, myCustom);
+  segmentStore.segments.delete(seg.id);
+  if (planIndex(state.plan, seg.id) >= 0) { state.plan = state.plan.filter((s) => s.id !== seg.id); savePlan(); }
+  closeSheet();
+  drawSegments();
 }
 
 // ------------------------------------------------------------ route plan ----
@@ -1328,7 +1521,7 @@ $('#plan-clear').addEventListener('click', () => {
 $('#plan-show').addEventListener('click', () => setView('plan'));
 
 function exportMyTrailInfo() {
-  const json = JSON.stringify(exportTrailInfo(defaultInfo, myRatings, myNames), null, 2);
+  const json = JSON.stringify(exportTrailInfo(defaultInfo, myRatings, myNames, customDefaults, myCustom), null, 2);
   download('trail-info.json', `${json}\n`, 'application/json');
 }
 
@@ -1463,13 +1656,14 @@ syncModeUI();
 applyLayers();
 startGPS();
 whenReady(loadSegments);
+addCustomSegments();
 drawPlan();
 fetch('data/trail-info.json')
   .then((r) => (r.ok ? r.json() : {}))
-  .then((json) => { defaultInfo = json.trails || {}; drawSegments(); })
+  .then((json) => { defaultInfo = json.trails || {}; customDefaults = json.custom || {}; addCustomSegments(); })
   .catch(() => { /* offline and not cached: own ratings still apply */ });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 // Exposed for debugging / automated tests.
-window.trailnav = { map, state, settings };
+window.trailnav = { map, state, settings, draw, segmentStore };

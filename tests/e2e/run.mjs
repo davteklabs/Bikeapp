@@ -39,7 +39,7 @@ await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
   if (url.includes('tiles.openfreemap.org')) {
     if (url.endsWith('.pbf')) return route.fulfill({ contentType: 'application/x-protobuf', body: Buffer.alloc(0), headers: { 'Access-Control-Allow-Origin': '*' } });
     return json({ tilejson: '3.0.0', tiles: ['https://tiles.openfreemap.org/test/{z}/{x}/{y}.pbf'], minzoom: 0, maxzoom: 14,
-      vector_layers: [{ id: 'water', fields: {} }, { id: 'waterway', fields: {} }] });
+      vector_layers: [{ id: 'water', fields: {} }, { id: 'waterway', fields: {} }, { id: 'transportation', fields: {} }] });
   }
   if (url.includes('routing.openstreetmap.de')) {
     calls.route++;
@@ -80,6 +80,11 @@ await page.addInitScript(() => {
   const s = window.speechSynthesis;
   if (s) { s.speak = (u) => window.__spoken.push(u.text); s.cancel = () => {}; }
 });
+// Wait until the map has finished moving and drawing (fixed pauses are too short on slow machines).
+const idle = () => page.evaluate(() => new Promise((resolve) => {
+  const m = window.trailnav.map;
+  if (!m.isMoving() && m.loaded() && m.areTilesLoaded()) resolve(); else m.once('idle', () => resolve());
+}));
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -141,6 +146,7 @@ try {
   // Name the unnamed track, then get directions to it.
   const quarry = { lng: START.lng + 0.0015, lat: START.lat - 0.002 };
   await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), quarry);
+  await idle();
   await page.waitForTimeout(800);
   const tap2 = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), quarry);
   await page.mouse.click(tap2.x, tap2.y);
@@ -172,13 +178,14 @@ try {
     const pt = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), p);
     await page.mouse.move(pt.x, pt.y);
     await page.mouse.down();
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(900);
     await page.mouse.up();
     await page.waitForTimeout(300);
   };
   const ridgeA = { lng: CORNER.lng, lat: (3 * CORNER.lat + END.lat) / 4 }; // segment 1001
   const ridgeB = { lng: CORNER.lng, lat: (CORNER.lat + 3 * END.lat) / 4 }; // segment 1002
   await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), ridgeA);
+  await idle();
   await page.waitForTimeout(800);
   await holdOn(ridgeA);
   assert.deepEqual(await planIds(), ['1001']);
@@ -251,13 +258,19 @@ try {
     await page.waitForTimeout(250);
   };
   await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), ridgeA);
+  await idle();
   await page.waitForTimeout(600);
   await tapAt(ridgeA);
   await tapAt(ridgeB);
   assert.deepEqual(await planIds(), ['1001', '1002']);
   assert.equal(await page.locator('#sheet .plan-list li').count(), 2);
-  await page.waitForFunction(() => window.trailnav.state.planRoute, null, { timeout: 5000 });
-  const planSteps = await page.evaluate(() => window.trailnav.state.planRoute.steps.map((s) => s.text));
+  // Read the finished route for both trails in one go (the app rebuilds after each tap).
+  const settled = (cond) => page.waitForFunction((c) => {
+    const s = window.trailnav.state, r = s.planRoute;
+    if (!r || s.planBuilding || s.plan.length !== c.n || (c.pin && !s.planStart)) return null;
+    return { steps: r.steps.map((x) => x.text), d: r.distance };
+  }, cond, { timeout: 8000 }).then((h) => h.jsonValue());
+  const planSteps = (await settled({ n: 2 })).steps;
   assert.deepEqual(planSteps, ['Head east', 'Turn left onto Ridge Trail', 'Arrive at your end point']);
   assert.match(await page.textContent('#sheet .plan-summary'), /4 min.*800 m.*incl\. 500 m off the picked trails/);
   ok('plan mode: tap trails in order; route joins #1 at its closest point and turns onto it');
@@ -266,8 +279,7 @@ try {
   // Drop a start pin right on the trail: no link needed, and #1 still sets the direction (north).
   await page.click('#sheet #pick-start');
   await tapAt({ lng: CORNER.lng + 0.0001, lat: CORNER.lat + 0.0003 });
-  await page.waitForFunction(() => window.trailnav.state.planStart && window.trailnav.state.planRoute, null, { timeout: 5000 });
-  const r2 = await page.evaluate(() => ({ steps: window.trailnav.state.planRoute.steps.map((s) => s.text), d: window.trailnav.state.planRoute.distance }));
+  const r2 = await settled({ n: 2, pin: true });
   assert.deepEqual(r2.steps, ['Head north on Ridge Trail', 'Arrive at your end point']);
   assert.ok(Math.abs(r2.d - 267) < 15, r2.d);
   assert.match(await page.textContent('#sheet .plan-start'), /Pin on the map/);
@@ -298,6 +310,57 @@ try {
   // Back to where the rest of the test expects GPS to be.
   await setGPS(START);
 
+  // Draw a trail: a stroke snapped onto the track (1003), a freehand one, erase, undo, save.
+  const track = { south: START.lat - 0.002, west: START.lng, east: START.lng + 0.003 }; // 1003 runs west-east
+  await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 16 }), { lng: START.lng + 0.0015, lat: START.lat - 0.0015 });
+  await idle();
+  await page.waitForTimeout(600);
+  await page.click('#btn-draw');
+  assert.ok(await page.isVisible('#draw-bar'));
+  assert.ok(await page.isHidden('#topbar'), 'search and toggles step aside while drawing');
+  const drag = async (from, to, steps = 15) => {
+    const [a, b] = await page.evaluate(([p, q]) => [p, q].map((r) => window.trailnav.map.project([r.lng, r.lat])), [from, to]);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+  };
+  const strokes = () => page.evaluate(() => window.trailnav.draw.strokes);
+  const offTrack = (p) => Math.abs(p.lat - track.south) * 111200; // metres from the track line
+  // 8 m north of the track: snapping puts the line on it.
+  await drag({ lat: track.south + 0.00007, lng: START.lng + 0.0003 }, { lat: track.south + 0.00007, lng: START.lng + 0.0027 });
+  let st = await strokes();
+  assert.equal(st.length, 1);
+  assert.ok(st[0].every((p) => offTrack(p) < 1.5), `snapped onto the track (max ${Math.max(...st[0].map(offTrack)).toFixed(1)} m off)`);
+  ok('drawing snaps onto an existing line by default');
+  await page.uncheck('#draw-snap');
+  await drag({ lat: track.south + 0.0012, lng: START.lng + 0.0005 }, { lat: track.south + 0.0012, lng: START.lng + 0.0025 });
+  st = await strokes();
+  assert.equal(st.length, 2);
+  assert.ok(st[1].every((p) => offTrack(p) > 120), 'freehand stays where it was drawn');
+  ok('with snapping off, drawing is freehand');
+  await page.click('#draw-bar [data-tool="erase"]');
+  const mid = START.lng + 0.0015;
+  await drag({ lat: track.south + 0.0001, lng: mid }, { lat: track.south - 0.0001, lng: mid }, 6);
+  assert.equal((await strokes()).length, 3, 'erasing through the middle splits the stroke');
+  await page.click('#draw-undo');
+  assert.equal((await strokes()).length, 2);
+  ok('eraser cuts the drawing; Undo puts it back');
+  await snap(page, '1f-draw');
+  await page.click('#draw-save');
+  await page.fill('#draw-name', 'Canal Path');
+  await page.click('#draw-form button[type="submit"]');
+  await page.waitForSelector('#sheet #seg-go');
+  assert.equal(await page.textContent('#sheet h2'), 'Canal Path');
+  assert.match(await page.textContent('#sheet .meta'), /drawn/);
+  assert.equal(await page.evaluate(() => window.trailnav.draw.on), false);
+  const drawn = await page.evaluate(() => [...window.trailnav.segmentStore.segments.values()].filter((s) => s.custom === 'mine').map((s) => s.name));
+  assert.deepEqual(drawn, ['Canal Path', 'Canal Path']);
+  await page.waitForFunction(() => window.trailnav.map.querySourceFeatures('segments').some((f) => f.properties.name === 'Canal Path'));
+  ok('saved drawing becomes a named trail on the map, with its trail panel');
+  await page.click('#sheet-close');
+
   await page.fill('#search', 'Ridge');
   await page.waitForSelector('#search-results li .name');
   assert.equal(await page.textContent('#search-results li .name'), 'Ridge Summit');
@@ -325,6 +388,8 @@ try {
   ok('navigation view tilts and faces the direction of travel');
 
   for (const t of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) await setGPS(lerp(START, CORNER, t));
+  // Give a slow machine a moment to process the last fixes.
+  await page.waitForFunction(() => parseInt(document.querySelector('#nav-dist').textContent) < 100, null, { timeout: 5000 }).catch(() => {});
   const dist = await page.textContent('#nav-dist');
   assert.ok(/^\d+ m$/.test(dist) && parseInt(dist) < 100, dist);
   const spoken = await page.evaluate(() => window.__spoken);
@@ -355,6 +420,7 @@ try {
   await page.click('.mode-toggle [data-mode="hike"]');
   assert.equal(await page.getAttribute('body', 'data-mode'), 'hike');
   await page.evaluate(() => void window.trailnav.map.setZoom(12));
+  await idle();
   await page.click('#btn-trails');
   await page.waitForSelector('.trail-list li');
   assert.match(await page.textContent('.trail-list li'), /Panorama Loop/);
@@ -378,7 +444,8 @@ try {
   const [exp] = await Promise.all([page.waitForEvent('download'), page.click('#export-ratings')]);
   const exported = JSON.parse(readFileSync(await exp.path(), 'utf8'));
   assert.deepEqual(exported.trails, { 1001: { rating: 'blue' }, 1002: { rating: 'black' }, 1003: { name: 'Quarry Spur' } });
-  ok('ratings and names export in the same format as the shipped defaults file');
+  assert.deepEqual(Object.values(exported.custom).map((c) => c.name), ['Canal Path', 'Canal Path']);
+  ok('ratings, names and drawn trails export in the same format as the shipped defaults file');
 
   await page.selectOption('#units', 'imperial');
   await page.click('#btn-trails');

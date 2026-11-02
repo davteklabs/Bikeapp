@@ -73,6 +73,22 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .plan-num { width: 22px; height: 22px; border-radius: 50%; background: #9c27b0; color: #fff; border: 2px solid #fff;
   font: 700 12px/18px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.4); pointer-events: none; }
 #sheet .hint { font-size: 13px; margin: 8px 0 0; }
+/* Drawing a trail: a tool bar at the bottom; search, other buttons and the route bar step aside. */
+#draw-bar { position: fixed; z-index: 1001; left: 10px; right: 10px; bottom: calc(var(--safe-bottom) + 10px); max-width: 560px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+#draw-bar .draw-tools { align-self: stretch; display: flex; }
+#draw-bar .draw-tools button { flex: 1; }
+#draw-bar .draw-tools button[aria-checked="true"] { background: #ff6d00; color: #fff; }
+.draw-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.draw-row .snap { display: flex; align-items: center; gap: 6px; font-weight: 600; flex: 1; }
+.draw-row .btn:last-child { margin-left: auto; }
+#draw-len { font-size: 13px; }
+body.drawing #topbar, body.drawing #fabs .fab:not(#btn-draw) { display: none; }
+body.drawing #fabs { bottom: calc(var(--safe-bottom) + 190px); }
+body.drawing .maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 14px); }
+#btn-draw.active { background: #ff6d00; }
+#btn-draw.active svg { fill: #fff; }
+body.drawing[data-draw-tool="pen"] #map, body.drawing[data-draw-tool="erase"] #map { cursor: crosshair; touch-action: none; }
 .plan-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
 .plan-row .grow, .plan-list .grow { flex: 1; min-width: 0; }
 .plan-row select { font: inherit; padding: 4px 6px; background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }

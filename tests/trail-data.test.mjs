@@ -78,3 +78,11 @@ test('exportTrailInfo produces the shipped file format with own ratings and name
   assert.equal(effectiveRating('3', out.trails, {}).rating, 'green');
   assert.equal(effectiveName('4', null, out.trails, {}).name, 'Quarry Spur');
 });
+
+test('exportTrailInfo includes drawn trails, shipped and own', () => {
+  const coords = [[-121.17, 38.75], [-121.169, 38.751]];
+  const out = exportTrailInfo({}, { d1: { rating: 'green' } }, {}, { d0: { name: 'Old Canal Path', kind: 'r', coords } }, { d1: { name: 'Canal Path', kind: 'p', coords } });
+  assert.deepEqual(Object.keys(out.custom).sort(), ['d0', 'd1']);
+  assert.equal(out.custom.d1.name, 'Canal Path');
+  assert.deepEqual(out.trails.d1, { rating: 'green' });
+});

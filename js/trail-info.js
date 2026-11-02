@@ -44,10 +44,11 @@ export function effectiveName(id, mapName, defaults = {}, myNames = {}) {
 }
 
 /**
- * The shipped defaults with this device's ratings and names applied, in the same
- * format as data/trail-info.json, so an exported file can replace it directly.
+ * The shipped defaults with this device's ratings, names and drawn trails applied, in
+ * the same format as data/trail-info.json, so an exported file can replace it directly.
+ * Drawn trails: custom = {id: {name, kind, coords: [[lng, lat], …]}}.
  */
-export function exportTrailInfo(defaults = {}, myRatings = {}, myNames = {}) {
+export function exportTrailInfo(defaults = {}, myRatings = {}, myNames = {}, customDefaults = {}, myCustom = {}) {
   const trails = {};
   for (const id of new Set([...Object.keys(defaults), ...Object.keys(myRatings), ...Object.keys(myNames)])) {
     const { rating } = effectiveRating(id, defaults, myRatings);
@@ -56,8 +57,9 @@ export function exportTrailInfo(defaults = {}, myRatings = {}, myNames = {}) {
     trails[id] = { ...(rating && { rating }), ...(name && { name }) };
   }
   return {
-    about: 'TrailNav trail knowledge base, shipped as defaults. Keys are OpenStreetMap way IDs. rating: green, blue or black, only when checked. name: the trail\'s name where OpenStreetMap has none or has it wrong. Unrated trails show grey.',
+    about: 'TrailNav trail knowledge base, shipped as defaults. trails: keyed by OpenStreetMap way ID or a drawn trail\'s id; rating: green, blue or black, only when checked; name: where OpenStreetMap has none or has it wrong. custom: trails drawn in the app. Unrated trails show grey.',
     exportedAt: new Date().toISOString(),
-    trails: Object.fromEntries(Object.entries(trails).sort(([a], [b]) => Number(a) - Number(b))),
+    trails: Object.fromEntries(Object.entries(trails).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+    custom: { ...customDefaults, ...myCustom },
   };
 }
