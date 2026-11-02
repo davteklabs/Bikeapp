@@ -1,0 +1,4 @@
+{
+  "about": "TrailNav trail knowledge base, shipped as defaults. Keys are OpenStreetMap way IDs. rating: green, blue or black, only when checked. name: the trail's name where OpenStreetMap has none or has it wrong. Unrated trails show grey.",
+  "trails": {}
+}

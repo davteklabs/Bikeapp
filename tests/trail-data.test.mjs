@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tilesInBounds, tileKey, parseTile, segmentLabel, TILE_SIZE } from '../js/segments.js';
-import { effectiveRating, ratingColor, exportRatings, RATINGS, UNRATED } from '../js/ratings.js';
+import { effectiveRating, ratingColor, effectiveName, exportTrailInfo, RATINGS, UNRATED } from '../js/trail-info.js';
 
 test('tilesInBounds covers the box with aligned tiles', () => {
   const tiles = tilesInBounds({ south: 38.74, west: -121.19, north: 38.76, east: -121.14 });
@@ -35,10 +35,26 @@ test('ratings: only real ratings get a colour, own ratings override defaults', (
   assert.deepEqual(effectiveRating('5', { 5: 'purple' }, {}), { rating: null, source: null });
 });
 
-test('exportRatings produces the shipped file format with own ratings applied', () => {
-  const out = exportRatings({ 1: 'blue', 2: { rating: 'black', name: 'Rock Garden' } }, { 2: { rating: 'unrated' }, 3: { rating: 'green', name: 'Easy Loop' } });
-  assert.deepEqual(out.ratings, { 1: { rating: 'blue' }, 3: { rating: 'green', name: 'Easy Loop' } });
+test('names: your own beats the TrailNav default beats the map data', () => {
+  const defaults = { 1: { name: 'Jedi Trail' }, 2: { rating: 'blue' } };
+  const mine = { 3: 'Quarry Spur' };
+  assert.deepEqual(effectiveName('1', null, defaults, mine), { name: 'Jedi Trail', source: 'default' });
+  assert.deepEqual(effectiveName('1', 'Old Name', defaults, { 1: 'New Name' }), { name: 'New Name', source: 'you' });
+  assert.deepEqual(effectiveName('2', 'Pioneer Express Trail', defaults, mine), { name: 'Pioneer Express Trail', source: 'map' });
+  assert.deepEqual(effectiveName('3', null, defaults, mine), { name: 'Quarry Spur', source: 'you' });
+  assert.deepEqual(effectiveName('4', null, defaults, mine), { name: null, source: null });
+  assert.equal(segmentLabel({ kind: 'p', name: null }, 'Quarry Spur'), 'Quarry Spur');
+});
+
+test('exportTrailInfo produces the shipped file format with own ratings and names applied', () => {
+  const out = exportTrailInfo(
+    { 1: { rating: 'blue' }, 2: { rating: 'black', name: 'Rock Garden' } },
+    { 2: { rating: 'unrated' }, 3: { rating: 'green' } },
+    { 4: 'Quarry Spur' },
+  );
+  assert.deepEqual(out.trails, { 1: { rating: 'blue' }, 2: { name: 'Rock Garden' }, 3: { rating: 'green' }, 4: { name: 'Quarry Spur' } });
   assert.match(out.about, /green, blue or black/);
-  // Round trip: the export, used as defaults, gives the same colours.
-  assert.equal(effectiveRating('3', out.ratings, {}).rating, 'green');
+  // Round trip: the export, used as defaults, gives the same colours and names.
+  assert.equal(effectiveRating('3', out.trails, {}).rating, 'green');
+  assert.equal(effectiveName('4', null, out.trails, {}).name, 'Quarry Spur');
 });

@@ -6,7 +6,7 @@ import { Navigator } from './navigator.js';
 import { TrackRecorder } from './recorder.js';
 import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
 import { SegmentStore, segmentLabel, HIGHWAY_LABEL } from './segments.js';
-import { RATINGS, UNRATED, effectiveRating, ratingColor, exportRatings } from './ratings.js';
+import { RATINGS, UNRATED, effectiveRating, ratingColor, effectiveName, exportTrailInfo } from './trail-info.js';
 import { haversine, bearing, destination, polylineLength, snapToPolyline, cumulativeDistances } from './geo.js';
 import { formatDistance, formatDuration, formatSpeed, formatClock } from './format.js';
 
@@ -26,10 +26,11 @@ delete settings.view;
 // The app covers California only; a saved position elsewhere starts at Granite Bay instead.
 if (!settings.camera || !inRegion(...settings.camera.center)) settings.camera = { ...REGION.home };
 
-// Difficulty ratings: shipped defaults plus this device's own ratings (see ratings.js).
-const RATINGS_KEY = 'trailnav:ratings';
+// Trail ratings and names: shipped defaults plus this device's own edits (see trail-info.js).
+const RATINGS_KEY = 'trailnav:ratings', NAMES_KEY = 'trailnav:names', LAST_NAME_KEY = 'trailnav:last-name';
 const myRatings = load(RATINGS_KEY);
-let defaultRatings = {};
+const myNames = load(NAMES_KEY);
+let defaultInfo = {};
 const segmentStore = new SegmentStore();
 
 const state = {
@@ -745,21 +746,29 @@ function showTrail(t) {
 
 $('#btn-trails').addEventListener('click', findTrails);
 
-// ------------------------------------------------- trail segments & ratings ----
+// ------------------------------------------ trail segments, ratings & names ----
 async function loadSegments() {
   if (map.getZoom() < 12) return;
   const b = map.getBounds();
   if (await segmentStore.loadBounds({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() })) drawSegments();
 }
 
+/** A segment's name: your own, the TrailNav default, or the map's (null if none). */
+const nameOf = (s) => effectiveName(s.id, s.name, defaultInfo, myNames).name;
+const labelOf = (s) => segmentLabel(s, nameOf(s));
+const segmentsNamed = (name) => (name ? [...segmentStore.segments.values()].filter((s) => nameOf(s) === name) : []);
+
 function drawSegments() {
   const h = state.highlight;
-  setData('segments', fc([...segmentStore.segments.values()].map((s) => lineFeature(s.coords, {
-    id: s.id,
-    name: segmentLabel(s),
-    color: ratingColor(effectiveRating(s.id, defaultRatings, myRatings).rating),
-    hl: !h ? 0 : s.id === h.id ? 2 : h.name && s.name === h.name ? 1 : 0,
-  }))));
+  setData('segments', fc([...segmentStore.segments.values()].map((s) => {
+    const name = nameOf(s);
+    return lineFeature(s.coords, {
+      id: s.id,
+      name: segmentLabel(s, name),
+      color: ratingColor(effectiveRating(s.id, defaultInfo, myRatings).rating),
+      hl: !h ? 0 : s.id === h.id ? 2 : h.name && name === h.name ? 1 : 0,
+    });
+  })));
 }
 
 function unselectSegment() {
@@ -772,9 +781,9 @@ function unselectSegment() {
 async function highlightTrail(name, id = null) {
   state.highlight = { name, id };
   drawSegments();
-  const segs = name ? await segmentStore.loadTrail(name) : [];
+  if (name) await segmentStore.loadTrail(name);
   if (state.highlight?.name === name) drawSegments();
-  return segs;
+  return segmentsNamed(name);
 }
 
 function nearestSegment(segs, p) {
@@ -783,61 +792,137 @@ function nearestSegment(segs, p) {
 }
 
 function ratingText(id) {
-  const { rating, source } = effectiveRating(id, defaultRatings, myRatings);
+  const { rating, source } = effectiveRating(id, defaultInfo, myRatings);
   if (!rating) return source === 'you' ? 'Not rated (you removed the default rating)' : 'Not rated';
   const r = RATINGS[rating];
   return `${r.label} · ${r.meaning} · ${source === 'you' ? 'your rating' : 'TrailNav default'}`;
 }
 
-async function showSegment(seg, { fit = true } = {}) {
-  const { rating } = effectiveRating(seg.id, defaultRatings, myRatings);
+const NAME_SOURCE = { you: 'Name set by you', default: 'Name from TrailNav', map: 'Name from OpenStreetMap' };
+
+function setNames(targets, newName) {
+  for (const s of targets) {
+    // Only store a name that differs from what the app would show anyway.
+    const base = effectiveName(s.id, s.name, defaultInfo, {}).name;
+    if (!newName || newName === base) delete myNames[s.id];
+    else myNames[s.id] = newName;
+  }
+  save(NAMES_KEY, myNames);
+  if (newName) save(LAST_NAME_KEY, { name: newName });
+}
+
+const GEAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"/></svg>';
+
+async function showSegment(seg, { fit = true, editing = false } = {}) {
+  const { rating } = effectiveRating(seg.id, defaultInfo, myRatings);
+  const name = nameOf(seg);
+  const lastName = load(LAST_NAME_KEY).name;
   const choices = [...Object.entries(RATINGS), ['unrated', UNRATED]];
+  const again = () => showSegment(seg, { fit: false, editing: true });
+  // Navigation first; name and difficulty editing sit behind the gear button.
   openSheet(`
-    <h2 class="n"></h2>
+    <div class="title-row">
+      <h2 class="n"></h2>
+      <button class="icon-btn gear" id="seg-edit" aria-label="Edit trail name and difficulty" title="Edit name &amp; difficulty" aria-expanded="${editing}">${GEAR_SVG}</button>
+    </div>
     <div class="muted meta"></div>
     <div class="muted trail-len"></div>
-    <h3>This segment</h3>
     <div class="rating-now"><span class="swatch"></span><span class="txt"></span></div>
+    <div class="row actions"><button class="btn primary" id="seg-go">Directions to this trail</button></div>
+    <div class="edit-panel" ${editing ? '' : 'hidden'}>
+    <h3>Name</h3>
+    <div class="muted name-src"></div>
+    <div class="row name-actions">
+      <button class="btn" id="rename">Rename</button>
+      <button class="btn" id="name-last" hidden></button>
+    </div>
+    <form class="rename" hidden>
+      <input id="name-input" maxlength="80" placeholder="Trail name" autocomplete="off" enterkeyhint="done">
+      <label class="same" hidden><input type="checkbox" id="name-all"> <span></span></label>
+      <div class="row">
+        <button class="btn primary" type="submit">Save</button>
+        <button class="btn" type="button" id="name-cancel">Cancel</button>
+        <button class="btn" type="button" id="name-reset" hidden>Use original name</button>
+      </div>
+    </form>
+    <h3>Difficulty of this segment</h3>
     <div class="rate-buttons">
       ${choices.map(([k, r]) => `<button class="rate" data-r="${k}" aria-pressed="${(rating || 'unrated') === k}"><span class="swatch" style="background:${r.color}"></span>${r.label}</button>`).join('')}
     </div>
     <label class="same" hidden><input type="checkbox" id="rate-all"> <span></span></label>
-    <div class="row actions"><button class="btn" id="rate-reset" hidden>Use TrailNav default</button></div>`, (root) => {
-    root.querySelector('.n').textContent = segmentLabel(seg);
+    <div class="row actions"><button class="btn" id="rate-reset" hidden>Use TrailNav default rating</button></div>
+    </div>`, (root) => {
+    root.querySelector('.n').textContent = labelOf(seg);
+    root.querySelector('#seg-edit').onclick = (e) => {
+      const panel = root.querySelector('.edit-panel');
+      panel.hidden = !panel.hidden;
+      e.currentTarget.setAttribute('aria-expanded', String(!panel.hidden));
+      if (!panel.hidden) panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    };
     root.querySelector('.meta').textContent = `${HIGHWAY_LABEL[seg.kind] || 'Trail'} · this segment ${formatDistance(polylineLength(seg.coords), settings.units)}`;
+    root.querySelector('.name-src').textContent = NAME_SOURCE[effectiveName(seg.id, seg.name, defaultInfo, myNames).source] || 'No name in the map data';
+
+    root.querySelector('#seg-go').onclick = () => {
+      const from = state.origin || state.fix || map.getCenter();
+      const trail = segmentsNamed(name).length ? segmentsNamed(name) : [seg];
+      const near = nearestPointOnTrail({ lat: from.lat, lng: from.lng }, { lines: trail.map((s) => s.coords) });
+      planRoute({ lat: near.point.lat, lng: near.point.lng, name: labelOf(seg) });
+    };
+
+    const form = root.querySelector('.rename');
+    const input = root.querySelector('#name-input');
+    root.querySelector('#rename').onclick = () => { form.hidden = false; input.value = name || ''; input.focus(); };
+    root.querySelector('#name-cancel').onclick = () => { form.hidden = true; };
+    root.querySelector('#name-reset').hidden = !myNames[seg.id];
+    root.querySelector('#name-reset').onclick = () => { setNames([seg], ''); again(); };
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      setNames(root.querySelector('#name-all').checked ? segmentsNamed(name) : [seg], input.value.trim());
+      again();
+    };
+    if (lastName && lastName !== name) {
+      // Quick way to name a trail piece by piece: tap the next segment, tap this.
+      const b = root.querySelector('#name-last');
+      b.hidden = false;
+      b.textContent = `Name it “${lastName}”`;
+      b.onclick = () => { setNames([seg], lastName); again(); };
+    }
+
     root.querySelector('.rating-now .swatch').style.background = ratingColor(rating);
     root.querySelector('.rating-now .txt').textContent = ratingText(seg.id);
     root.querySelector('#rate-reset').hidden = !myRatings[seg.id];
     root.querySelectorAll('.rate').forEach((b) => (b.onclick = () => {
-      const targets = root.querySelector('#rate-all').checked ? segmentStore.named(seg.name) : [seg];
+      const targets = root.querySelector('#rate-all').checked ? segmentsNamed(name) : [seg];
       for (const s of targets) {
         // Only store what differs from the shipped default.
-        const def = effectiveRating(s.id, defaultRatings, {}).rating || 'unrated';
+        const def = effectiveRating(s.id, defaultInfo, {}).rating || 'unrated';
         if (b.dataset.r === def) delete myRatings[s.id];
-        else myRatings[s.id] = { rating: b.dataset.r, name: s.name };
+        else myRatings[s.id] = { rating: b.dataset.r };
       }
       save(RATINGS_KEY, myRatings);
-      showSegment(seg, { fit: false });
+      again();
     }));
-    root.querySelector('#rate-reset').onclick = () => { delete myRatings[seg.id]; save(RATINGS_KEY, myRatings); showSegment(seg, { fit: false }); };
+    root.querySelector('#rate-reset').onclick = () => { delete myRatings[seg.id]; save(RATINGS_KEY, myRatings); again(); };
   });
 
   // Highlight the whole trail and show all of it.
   const root = els.sheetBody;
-  const named = seg.name ? await highlightTrail(seg.name, seg.id) : (await highlightTrail(null, seg.id), [seg]);
+  const named = name ? await highlightTrail(name, seg.id) : (await highlightTrail(null, seg.id), [seg]);
   if (state.highlight?.id !== seg.id) return; // another trail was tapped meanwhile
   if (named.length > 1) {
     root.querySelector('.trail-len').textContent = `Whole trail ${formatDistance(named.reduce((d, s) => d + polylineLength(s.coords), 0), settings.units)} in ${named.length} segments (highlighted)`;
-    const label = root.querySelector('.same');
-    label.hidden = false;
-    label.querySelector('span').textContent = `Apply to all ${named.length} segments of “${seg.name}”`;
+    for (const [sel, text] of [['#rate-all', `Apply to all ${named.length} segments of “${name}”`], ['#name-all', `Rename all ${named.length} segments of “${name}”`]]) {
+      const label = root.querySelector(sel).closest('label');
+      label.hidden = false;
+      label.querySelector('span').textContent = text;
+    }
   }
   if (fit) fitTo(named.flatMap((s) => s.coords), { top: 60, left: 40, right: 40, bottom: els.sheet.offsetHeight + 20 });
 }
 
-function exportMyRatings() {
-  const json = JSON.stringify(exportRatings(defaultRatings, myRatings), null, 2);
-  download('trail-ratings.json', `${json}\n`, 'application/json');
+function exportMyTrailInfo() {
+  const json = JSON.stringify(exportTrailInfo(defaultInfo, myRatings, myNames), null, 2);
+  download('trail-info.json', `${json}\n`, 'application/json');
 }
 
 // ------------------------------------------------------------ recording ----
@@ -912,14 +997,16 @@ $('#btn-layers').addEventListener('click', () => {
       ${Object.entries(OVERLAYS).map(([k, d]) => `<label><input type="checkbox" name="ov" value="${k}" ${overlays.includes(k) ? 'checked' : ''}> ${d.name}</label>`).join('')}
       <h3>Trail difficulty</h3>
       <div class="legend">${[...Object.values(RATINGS), UNRATED].map((r) => `<span><i style="background:${r.color}"></i>${r.label}</span>`).join('')}</div>
-      <p class="muted note">Zoom in and tap a trail to rate it. Grey only means nobody has rated it yet. It says nothing about how hard the trail is.</p>
-      <div class="row"><span>Your ratings on this device: <b id="my-count"></b></span><button class="btn" id="export-ratings">Export</button></div>
+      <p class="muted note">Zoom in and tap a trail to rate or rename it. Grey only means nobody has rated it yet. It says nothing about how hard the trail is.</p>
+      <p class="note">On this device: <b id="my-count"></b> ratings, <b id="my-names"></b> names.</p>
+      <button class="btn" id="export-ratings">Export ratings &amp; names</button>
       <h3>Navigation</h3>
       <label>Units <select id="units"><option value="metric">Metric (km)</option><option value="imperial">Imperial (mi)</option></select></label>
       <label><input type="checkbox" id="voice" ${settings.voice ? 'checked' : ''}> Voice directions</label>
     </div>`, (root) => {
     root.querySelector('#my-count').textContent = Object.keys(myRatings).length;
-    root.querySelector('#export-ratings').onclick = exportMyRatings;
+    root.querySelector('#my-names').textContent = Object.keys(myNames).length;
+    root.querySelector('#export-ratings').onclick = exportMyTrailInfo;
     root.querySelector('#units').value = settings.units;
     root.querySelectorAll('input[name="base"]').forEach((i) => (i.onchange = () => { settings.base = i.value; persistLayers(); }));
     root.querySelectorAll('input[name="ov"]').forEach((i) => (i.onchange = () => {
@@ -962,9 +1049,9 @@ syncModeUI();
 applyLayers();
 startGPS();
 whenReady(loadSegments);
-fetch('data/trail-ratings.json')
+fetch('data/trail-info.json')
   .then((r) => (r.ok ? r.json() : {}))
-  .then((json) => { defaultRatings = json.ratings || {}; drawSegments(); })
+  .then((json) => { defaultInfo = json.trails || {}; drawSegments(); })
   .catch(() => { /* offline and not cached: own ratings still apply */ });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});

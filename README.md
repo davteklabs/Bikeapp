@@ -10,7 +10,7 @@ accounts, or API keys.
 | | |
 |---|---|
 | 🗺️ **Trail maps** | California only, opening at Granite Bay. Base maps (faded so trails stand out): OpenStreetMap (bike), OpenTopoMap (hike, with contours), CyclOSM. Every trail segment is drawn on top from data shipped with the app. Optional Waymarked Trails overlays for signed routes. |
-| 🟢 **Trail difficulty** | Segments are green, blue or black only when someone has actually rated them; everything else is grey (not rated). Default ratings ship in `data/trail-ratings.json`; users can rate segments on their own device, and export their ratings in the same format. Tap a trail to highlight all of it. |
+| 🟢 **Trail difficulty & names** | Tap a trail to highlight all of it and get directions to it. Segments are green, blue or black only when someone has actually rated them; everything else is grey (not rated). Most trails have no name in OpenStreetMap, so they can be named in the app (⚙ in the trail panel). Default ratings and names ship in `data/trail-info.json`; users can change them on their own device and export them in the same format. |
 | 🔎 **Search** | Find places, peaks, parks and trailheads (OpenStreetMap Nominatim). Tap anywhere on the map to drop a pin. |
 | 🧭 **Routing** | Bike-specific and foot-specific routing on OSM paths and tracks, with alternative routes, a step list, reverse, and a custom start point. |
 | 🗣️ **Live navigation** | Google Maps–style tilted view that turns to face your direction of travel, with you low on the screen and the route ahead. Big next-turn banner with distance-to-turn, voice prompts timed per activity, "then…" hints for back-to-back turns, ETA, remaining distance and speed. The screen stays on. |
@@ -57,7 +57,7 @@ js/routing.js              OSRM client + route normalisation
 js/instructions.js         OSRM maneuvers → "Turn left onto Ridge Trail" + icons
 js/trails.js               Overpass query for hiking/bicycle/MTB route relations
 js/segments.js             Loads shipped trail-segment tiles (data/trails/) by map view or trail name
-js/ratings.js              Difficulty ratings: shipped defaults + the user's own, export
+js/trail-info.js           Ratings and names: shipped defaults + the user's own edits, export
 scripts/build-trails.mjs   Builds data/trails/ for a region from Overpass (see below)
 js/search.js               Nominatim search (rate-limited to 1 request/second)
 js/recorder.js             Track recording + GPX export
@@ -77,9 +77,11 @@ node scripts/build-trails.mjs folsom-lake 38.64 -121.26 38.90 -121.02   # name s
 This writes `data/trails/index.json`, `names.json` and `tiles/*.json` (0.05° tiles). Raw Overpass
 responses are kept in `logs/overpass-raw/` so a rebuild doesn't download again.
 
-Difficulty ratings live in `data/trail-ratings.json`, keyed by OpenStreetMap way ID. To update
-the defaults: rate trails in the app, then **Map & settings → Export**, and replace that file
-with the export. Never add a rating that hasn't been checked; unrated trails stay grey.
+Ratings and names live in `data/trail-info.json`, keyed by OpenStreetMap way ID. To update the
+defaults: rate and name trails in the app, then **Map & settings → Export ratings & names**, and
+replace that file with the export (then re-run the build so the new names are searchable by
+name). Never add a rating that hasn't been checked; unrated trails stay grey. Unnamed ways that
+belong to a signed hiking/cycling route get the route's name at build time.
 
 ### Data sources (all OpenStreetMap-based, free, no keys)
 

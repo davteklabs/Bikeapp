@@ -46,10 +46,10 @@ await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
 });
 // Shipped trail data and default ratings: one blue-rated segment, the rest unrated.
 const segmentKeys = tilesInBounds({ south: 38.7, west: -121.25, north: 38.8, east: -121.1 }).map((t) => tileKey(t.row, t.col));
-await context.route(/\/data\/(trails\/|trail-ratings\.json)/, (route) => {
+await context.route(/\/data\/(trails\/|trail-info\.json)/, (route) => {
   const url = route.request().url();
   const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
-  if (url.endsWith('/trail-ratings.json')) return json({ ratings: { 1001: 'blue' } });
+  if (url.endsWith('/trail-info.json')) return json({ trails: { 1001: { rating: 'blue' } } });
   if (url.endsWith('/index.json')) return json({ v: 1, tiles: segmentKeys, regions: [] });
   if (url.endsWith('/names.json')) return json({ 'Ridge Trail': segmentKeys });
   return json(segmentTile());
@@ -93,8 +93,9 @@ try {
   // Tap the second half of Ridge Trail.
   const tap = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), { lng: CORNER.lng, lat: (CORNER.lat + 3 * END.lat) / 4 });
   await page.mouse.click(tap.x, tap.y);
-  await page.waitForSelector('#sheet .rate-buttons');
+  await page.waitForSelector('#sheet #seg-go');
   assert.equal(await page.textContent('#sheet h2'), 'Ridge Trail');
+  assert.ok(await page.isHidden('#sheet .edit-panel'), 'editing is tucked behind the gear button');
   await page.waitForFunction(() => /in 2 segments/.test(document.querySelector('#sheet .trail-len')?.textContent || ''));
   await page.waitForTimeout(800);
   segs = await segProps();
@@ -104,11 +105,35 @@ try {
   ok('tapping a trail highlights the whole trail');
   await snap(page, '1b-trail');
 
+  await page.click('#sheet #seg-edit');
   await page.click('#sheet .rate[data-r="black"]');
   await page.waitForFunction(() => window.trailnav.map.querySourceFeatures('segments').some((f) => f.properties.id === '1002' && f.properties.color === '#111111'));
   assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('trailnav:ratings'))))['1002'].rating, 'black');
   assert.match(await page.textContent('#sheet .rating-now'), /Black · Difficult · your rating/);
   ok('rating a segment recolours it and saves it on this device');
+  await page.click('#sheet-close');
+
+  // Name the unnamed track, then get directions to it.
+  const quarry = { lng: START.lng + 0.0015, lat: START.lat - 0.002 };
+  await page.evaluate((p) => window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), quarry);
+  await page.waitForTimeout(800);
+  const tap2 = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), quarry);
+  await page.mouse.click(tap2.x, tap2.y);
+  await page.waitForSelector('#sheet #seg-go');
+  assert.equal(await page.textContent('#sheet h2'), 'Unnamed track');
+  await page.click('#sheet #seg-edit');
+  await page.click('#sheet #rename');
+  await page.fill('#sheet #name-input', 'Quarry Spur');
+  await page.click('#sheet .rename button[type="submit"]');
+  await page.waitForFunction(() => document.querySelector('#sheet h2')?.textContent === 'Quarry Spur');
+  await page.waitForTimeout(300);
+  assert.equal((await segProps())['1003'].name, 'Quarry Spur');
+  assert.match(await page.textContent('#sheet .name-src'), /Name set by you/);
+  ok('renaming a trail updates the map and saves it on this device');
+  await page.click('#sheet #seg-go');
+  await page.waitForSelector('#btn-start');
+  assert.match(await page.textContent('#sheet .dest-name'), /Quarry Spur/);
+  ok('Directions from the trail panel plans a route to the trail');
   await page.click('#sheet-close');
 
   await page.fill('#search', 'Ridge');
@@ -190,8 +215,8 @@ try {
 
   const [exp] = await Promise.all([page.waitForEvent('download'), page.click('#export-ratings')]);
   const exported = JSON.parse(readFileSync(await exp.path(), 'utf8'));
-  assert.deepEqual(exported.ratings, { 1001: { rating: 'blue' }, 1002: { rating: 'black', name: 'Ridge Trail' } });
-  ok('ratings export in the same format as the shipped defaults file');
+  assert.deepEqual(exported.trails, { 1001: { rating: 'blue' }, 1002: { rating: 'black' }, 1003: { name: 'Quarry Spur' } });
+  ok('ratings and names export in the same format as the shipped defaults file');
 
   await page.selectOption('#units', 'imperial');
   await page.click('#btn-trails');

@@ -28,8 +28,8 @@ export function parseTile(json) {
   }));
 }
 
-export function segmentLabel(seg) {
-  return seg.name || `Unnamed ${(HIGHWAY_LABEL[seg.kind] || 'trail').toLowerCase()}`;
+export function segmentLabel(seg, name = seg.name) {
+  return name || `Unnamed ${(HIGHWAY_LABEL[seg.kind] || 'trail').toLowerCase()}`;
 }
 
 /** Loads tiles on demand and keeps every segment seen so far, keyed by OSM way id. */

@@ -120,6 +120,15 @@ body.navigating #btn-trails, body.navigating #btn-layers { display: none; }
 .rate[aria-pressed="true"] { border-color: var(--accent); background: var(--bg-soft); }
 #sheet .same { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
 .trail-len { font-size: 14px; }
+#sheet .title-row { display: flex; align-items: center; gap: 4px; margin-right: 32px; }
+#sheet .title-row h2 { margin: 0; flex: 1; min-width: 0; }
+.gear { flex: none; padding: 6px; }
+.gear svg { width: 22px; height: 22px; fill: var(--ink-soft); display: block; }
+.gear[aria-expanded="true"] svg { fill: var(--accent); }
+.edit-panel { border-top: 1px solid var(--line); margin-top: 14px; }
+.rename { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+#name-input { font: inherit; font-size: 16px; padding: 9px 12px; border: 2px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
+#name-input:focus { outline: 0; border-color: var(--accent); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
 .legend i { width: 22px; height: 6px; border-radius: 3px; box-shadow: 0 0 0 1px #fff, 0 0 0 2px var(--line); }
