@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>TrailNav</title>
+  <meta name="description" content="Bike & hike navigation on open trail maps with live turn-by-turn directions.">
+  <meta name="theme-color" content="#1f7a4d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body data-mode="bike">
+  <div id="map" aria-label="Map"></div>
+
+  <!-- Search + activity mode -->
+  <header id="topbar">
+    <form id="search-form" class="searchbox" role="search" autocomplete="off">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 0 3.6 10.8l4.3 4.3 1.4-1.4-4.3-4.3A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/></svg>
+      <input id="search" type="search" placeholder="Search places, parks, trailheads…" enterkeyhint="search" aria-label="Search">
+      <button type="button" id="search-clear" class="icon-btn" aria-label="Clear search" hidden>✕</button>
+    </form>
+    <div class="mode-toggle" role="radiogroup" aria-label="Activity">
+      <button type="button" data-mode="bike" role="radio" aria-checked="true">🚲 Bike</button>
+      <button type="button" data-mode="hike" role="radio" aria-checked="false">🥾 Hike</button>
+    </div>
+    <ul id="search-results" class="card" hidden></ul>
+  </header>
+
+  <!-- Navigation banner (turn-by-turn) -->
+  <section id="nav-banner" hidden aria-live="polite">
+    <div class="maneuver">
+      <div id="nav-icon" class="maneuver-icon"></div>
+      <div id="nav-dist" class="maneuver-dist">–</div>
+    </div>
+    <div class="maneuver-text">
+      <div id="nav-text">–</div>
+      <div id="nav-then" class="then" hidden></div>
+    </div>
+  </section>
+  <div id="offroute" class="pill warn" hidden>Off route — rerouting…</div>
+
+  <!-- Floating buttons -->
+  <div id="fabs">
+    <button class="fab" id="btn-layers" aria-label="Map layers & settings" title="Layers & settings">
+      <svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5zm-7.6 8.8L2 13l10 5 10-5-2.4-1.2L12 15.6l-7.6-3.8zm0 4.5L2 17.5l10 5 10-5-2.4-1.2L12 20.1l-7.6-3.8z"/></svg>
+    </button>
+    <button class="fab" id="btn-trails" aria-label="Find trails here" title="Trails nearby">
+      <svg viewBox="0 0 24 24"><path d="M14 6l-3.8 5 2.9 3.8-1.6 1.2C9.8 13.6 7 10 7 10l-6 8h22L14 6z"/></svg>
+    </button>
+    <button class="fab" id="btn-record" aria-label="Record track" title="Record track">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg>
+    </button>
+    <button class="fab primary" id="btn-locate" aria-label="Show my location" title="My location">
+      <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm9 3h-2.1A7 7 0 0 0 13 5.1V3h-2v2.1A7 7 0 0 0 5.1 11H3v2h2.1a7 7 0 0 0 5.9 5.9V21h2v-2.1a7 7 0 0 0 5.9-5.9H21v-2zm-9 6a5 5 0 1 1 0-10 5 5 0 0 1 0 10z"/></svg>
+    </button>
+  </div>
+
+  <!-- Navigation footer -->
+  <section id="nav-footer" class="card" hidden>
+    <div class="stat"><span id="nav-remaining">–</span><small>to go</small></div>
+    <div class="stat"><span id="nav-eta">–</span><small>arrival</small></div>
+    <div class="stat"><span id="nav-speed">–</span><small>speed</small></div>
+    <button id="btn-mute" class="icon-btn" aria-label="Mute voice">🔊</button>
+    <button id="btn-end" class="btn danger">End</button>
+  </section>
+  <button id="btn-recenter" class="pill" hidden>⌖ Re-center</button>
+
+  <!-- Bottom sheet hosting panels -->
+  <section id="sheet" class="card" hidden>
+    <button id="sheet-close" class="icon-btn close" aria-label="Close">✕</button>
+    <div id="sheet-body"></div>
+  </section>
+
+  <div id="toast" role="status" hidden></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

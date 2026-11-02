@@ -1,0 +1,16 @@
+{
+  "name": "TrailNav — Bike & Hike Navigation",
+  "short_name": "TrailNav",
+  "description": "Open trail maps with live GPS turn-by-turn directions for biking and hiking.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1f7a4d",
+  "theme_color": "#1f7a4d",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
