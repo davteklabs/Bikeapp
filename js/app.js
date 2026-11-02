@@ -6,6 +6,7 @@ import { Navigator } from './navigator.js';
 import { TrackRecorder } from './recorder.js';
 import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
 import { SegmentStore, segmentLabel, HIGHWAY_LABEL } from './segments.js';
+import { togglePlanned, planIndex, planLength, midpoint } from './plan.js';
 import { RATINGS, UNRATED, effectiveRating, ratingColor, effectiveName, exportTrailInfo } from './trail-info.js';
 import { haversine, bearing, destination, polylineLength, snapToPolyline, cumulativeDistances } from './geo.js';
 import { formatDistance, formatDuration, formatSpeed, formatClock } from './format.js';
@@ -28,6 +29,7 @@ if (!settings.camera || !inRegion(...settings.camera.center)) settings.camera = 
 
 // Trail ratings and names: shipped defaults plus this device's own edits (see trail-info.js).
 const RATINGS_KEY = 'trailnav:ratings', NAMES_KEY = 'trailnav:names', LAST_NAME_KEY = 'trailnav:last-name';
+const PLAN_KEY = 'trailnav:plan';
 const myRatings = load(RATINGS_KEY);
 const myNames = load(NAMES_KEY);
 let defaultInfo = {};
@@ -50,6 +52,7 @@ const state = {
   trails: [],
   navHeading: null,     // direction of travel the map faces while navigating
   highlight: null,      // {name, id}: highlighted trail and the tapped segment of it
+  plan: load(PLAN_KEY).segments || [], // route plan: segments picked by press-and-hold, in order
 };
 
 const $ = (s) => document.querySelector(s);
@@ -60,6 +63,7 @@ const els = {
   banner: $('#nav-banner'), navIcon: $('#nav-icon'), navDist: $('#nav-dist'), navText: $('#nav-text'), navThen: $('#nav-then'),
   footer: $('#nav-footer'), navRemaining: $('#nav-remaining'), navEta: $('#nav-eta'), navSpeed: $('#nav-speed'),
   offroute: $('#offroute'), recenter: $('#btn-recenter'), mute: $('#btn-mute'),
+  planBar: $('#plan-bar'), planText: $('#plan-text'),
 };
 
 // ------------------------------------------------------------------ map ----
@@ -105,6 +109,7 @@ const map = (() => {
         ...Object.fromEntries(Object.entries(OVERLAYS).map(([k, d]) => [`ov-${k}`, rasterSource(d)])),
         trails: { type: 'geojson', data: EMPTY },
         segments: { type: 'geojson', data: EMPTY },
+        plan: { type: 'geojson', data: EMPTY },
         accuracy: { type: 'geojson', data: EMPTY },
         routes: { type: 'geojson', data: EMPTY },
         record: { type: 'geojson', data: EMPTY },
@@ -122,6 +127,12 @@ const map = (() => {
           'line-width': ['match', ['get', 'look'], 'hl', 16, 11],
           'line-opacity': ['match', ['get', 'look'], 'hl', 0.6, 'dim', 0.15, 0.4],
         }, { layout: { 'line-sort-key': ['match', ['get', 'look'], 'hl', 1, 0] } }),
+        // Segments in your route plan: a purple glow (not a difficulty colour).
+        lineLayer('plan-glow', 'plan', {
+          'line-color': '#9c27b0',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 7, 16, 18],
+          'line-opacity': 0.6,
+        }),
         // Highlighted trail: a yellow glow along its whole length, visible at any zoom.
         lineLayer('segments-hl', 'segments', {
           'line-color': '#ffc400',
@@ -183,7 +194,43 @@ map.on('dragstart', () => {
   state.following = false;
   els.recenter.hidden = !(state.nav || state.fix);
 });
+// Press and hold a trail to add it to (or remove it from) your route plan.
+const HOLD_MS = 500;
+let hold = null, holdHandled = false;
+function startHold(e) {
+  holdHandled = false; // a new press: any click from an earlier hold has already gone by
+  cancelHold();
+  if (state.nav || !mapReady || e.points?.length > 1) return;
+  const { point, lngLat } = e;
+  hold = { x: point.x, y: point.y, timer: setTimeout(() => { hold = null; holdAt(point, lngLat); }, HOLD_MS) };
+}
+function moveHold(e) {
+  if (hold && Math.hypot(e.point.x - hold.x, e.point.y - hold.y) > 10) cancelHold();
+}
+function cancelHold() {
+  if (hold) clearTimeout(hold.timer);
+  hold = null;
+}
+function holdAt({ x, y }, lngLat) {
+  const segs = map.queryRenderedFeatures([[x - 16, y - 16], [x + 16, y + 16]], { layers: ['segments'] })
+    .map((h) => segmentStore.segments.get(h.properties.id)).filter(Boolean);
+  if (!segs.length) return;
+  holdHandled = true; // swallow the click that follows the release
+  togglePlan(nearestSegment(segs, lngLat));
+}
+// Phones follow a touch with emulated mouse events; ignore those so they don't restart the hold.
+let lastTouch = 0;
+map.on('touchstart', (e) => { lastTouch = Date.now(); startHold(e); });
+map.on('touchend', () => { lastTouch = Date.now(); });
+map.on('mousedown', (e) => { if (e.originalEvent.button === 0 && Date.now() - lastTouch > 1000) startHold(e); });
+map.on('touchmove', moveHold);
+map.on('mousemove', moveHold);
+for (const ev of ['touchend', 'touchcancel', 'mouseup', 'dragstart', 'zoomstart']) map.on(ev, cancelHold);
+// Stop the browser's own long-press menu over the map.
+map.getCanvasContainer().addEventListener('contextmenu', (e) => e.preventDefault());
+
 map.on('click', (e) => {
+  if (holdHandled) { holdHandled = false; return; }
   if (state.nav || !mapReady) return;
   if (!els.results.hidden) { els.results.hidden = true; return; }
   // Lines are thin, so accept taps a little way off them.
@@ -828,7 +875,11 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     <div class="muted meta"></div>
     <div class="muted trail-len"></div>
     <div class="rating-now"><span class="swatch"></span><span class="txt"></span></div>
-    <div class="row actions"><button class="btn primary" id="seg-go">Directions to this trail</button></div>
+    <div class="row actions">
+      <button class="btn primary" id="seg-go">Directions to this trail</button>
+      <button class="btn" id="seg-plan"></button>
+    </div>
+    <p class="muted hint" id="plan-hint">Tip: press and hold a trail on the map to add it to your route.</p>
     <div class="edit-panel" ${editing ? '' : 'hidden'}>
     <h3>Name</h3>
     <div class="muted name-src"></div>
@@ -868,6 +919,14 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
       const near = nearestPointOnTrail({ lat: from.lat, lng: from.lng }, { lines: trail.map((s) => s.coords) });
       planRoute({ lat: near.point.lat, lng: near.point.lng, name: labelOf(seg) });
     };
+    const planBtn = root.querySelector('#seg-plan');
+    const syncPlanBtn = () => {
+      const i = planIndex(state.plan, seg.id);
+      planBtn.textContent = i >= 0 ? `Remove from route (#${i + 1})` : 'Add to route';
+      root.querySelector('#plan-hint').hidden = state.plan.length > 0;
+    };
+    planBtn.onclick = () => { togglePlan(seg); syncPlanBtn(); };
+    syncPlanBtn();
 
     const form = root.querySelector('.rename');
     const input = root.querySelector('#name-input');
@@ -919,6 +978,54 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
   }
   if (fit) fitTo(named.flatMap((s) => s.coords), { top: 60, left: 40, right: 40, bottom: els.sheet.offsetHeight + 20 });
 }
+
+// ------------------------------------------------------------ route plan ----
+let planMarkers = [];
+
+function togglePlan(seg) {
+  const had = planIndex(state.plan, seg.id) >= 0;
+  state.plan = togglePlanned(state.plan, seg);
+  savePlan();
+  navigator.vibrate?.(25);
+  toast(had ? `Removed ${labelOf(seg)} from your route` : `Added ${labelOf(seg)} to your route (#${state.plan.length})`);
+}
+
+function savePlan() {
+  save(PLAN_KEY, { segments: state.plan });
+  drawPlan();
+}
+
+function drawPlan() {
+  setData('plan', fc(state.plan.map((s, i) => lineFeature(s.coords, { n: i + 1 }))));
+  // Order numbers, so you can see the sequence you picked.
+  for (const m of planMarkers) m.remove();
+  planMarkers = state.plan.map((s, i) => {
+    const el = document.createElement('div');
+    el.className = 'plan-num';
+    el.textContent = i + 1;
+    return new maplibregl.Marker({ element: el }).setLngLat(ll(midpoint(s))).addTo(map);
+  });
+  const n = state.plan.length;
+  els.planBar.hidden = !n;
+  document.body.classList.toggle('plan-on', n > 0);
+  els.planText.textContent = `Route: ${n} ${n === 1 ? 'segment' : 'segments'} · ${formatDistance(planLength(state.plan), settings.units)}`;
+}
+
+$('#plan-undo').addEventListener('click', () => {
+  const last = state.plan.at(-1);
+  if (!last) return;
+  state.plan = state.plan.slice(0, -1);
+  savePlan();
+  toast(`Removed ${labelOf(last)}`);
+});
+$('#plan-clear').addEventListener('click', () => {
+  if (!confirm(`Clear your route (${state.plan.length} segments)?`)) return;
+  state.plan = [];
+  savePlan();
+});
+$('#plan-show').addEventListener('click', () => {
+  if (state.plan.length) fitTo(state.plan.flatMap((s) => s.coords), { top: 160, left: 40, right: 40, bottom: 60 });
+});
 
 function exportMyTrailInfo() {
   const json = JSON.stringify(exportTrailInfo(defaultInfo, myRatings, myNames), null, 2);
@@ -1049,6 +1156,7 @@ syncModeUI();
 applyLayers();
 startGPS();
 whenReady(loadSegments);
+drawPlan();
 fetch('data/trail-info.json')
   .then((r) => (r.ok ? r.json() : {}))
   .then((json) => { defaultInfo = json.trails || {}; drawSegments(); })

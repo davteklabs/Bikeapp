@@ -63,6 +63,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .mode-toggle { display: inline-flex; align-self: flex-start; background: var(--bg); border-radius: 999px; box-shadow: var(--shadow); padding: 3px; }
 .mode-toggle button { border: 0; background: transparent; border-radius: 999px; padding: 6px 14px; font-weight: 600; color: var(--ink-soft); }
 .mode-toggle button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); }
+#plan-bar { display: flex; align-items: center; gap: 2px; align-self: flex-start; max-width: 100%; border-radius: 999px; padding: 3px 6px 3px 4px; }
+.plan-show { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 6px 8px; font-weight: 700; min-width: 0; }
+#plan-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-dot { width: 12px; height: 12px; border-radius: 50%; background: #9c27b0; flex: none; }
+#plan-bar .icon-btn { font-size: 14px; font-weight: 600; color: var(--ink-soft); }
+.plan-num { width: 22px; height: 22px; border-radius: 50%; background: #9c27b0; color: #fff; border: 2px solid #fff;
+  font: 700 12px/18px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.4); pointer-events: none; }
+#sheet .hint { font-size: 13px; margin: 8px 0 0; }
+/* No browser text-selection or callout while pressing and holding the map. */
+#map { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 #search-results { list-style: none; margin: 0; padding: 4px 0; max-height: 50vh; overflow: auto; }
 #search-results li { padding: 10px 16px; cursor: pointer; border-bottom: 1px solid var(--line); }
 #search-results li:last-child { border-bottom: 0; }
@@ -170,6 +180,7 @@ body.navigating .me-marker .dot, body.navigating .me-marker .cone { display: non
 .maplibregl-map { font: inherit; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
 .maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 110px); }
+body.plan-on .maplibregl-ctrl-top-left { top: calc(var(--safe-top) + 160px); } /* below the route bar */
 body.navigating .maplibregl-ctrl-top-left { display: none; }
 .trail-tip .maplibregl-popup-content { padding: 4px 8px; font-weight: 600; color: #1b1f1d; }
 

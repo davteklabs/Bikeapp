@@ -136,6 +136,67 @@ try {
   ok('Directions from the trail panel plans a route to the trail');
   await page.click('#sheet-close');
 
+  // Route plan: press and hold trails to add them, hold again to remove.
+  const planIds = () => page.evaluate(() => window.trailnav.state.plan.map((s) => s.id));
+  const holdOn = async (p) => {
+    const pt = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), p);
+    await page.mouse.move(pt.x, pt.y);
+    await page.mouse.down();
+    await page.waitForTimeout(800);
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+  };
+  const ridgeA = { lng: CORNER.lng, lat: (3 * CORNER.lat + END.lat) / 4 }; // segment 1001
+  const ridgeB = { lng: CORNER.lng, lat: (CORNER.lat + 3 * END.lat) / 4 }; // segment 1002
+  await page.evaluate((p) => window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 15 }), ridgeA);
+  await page.waitForTimeout(800);
+  await holdOn(ridgeA);
+  assert.deepEqual(await planIds(), ['1001']);
+  assert.ok(await page.isHidden('#sheet'), 'press-and-hold does not also open the trail panel');
+  assert.match(await page.textContent('#plan-text'), /1 segment · 150 m/);
+  await holdOn(ridgeB);
+  assert.deepEqual(await planIds(), ['1001', '1002']);
+  assert.match(await page.textContent('#plan-text'), /2 segments · 300 m/);
+  assert.deepEqual(await page.$$eval('.plan-num', (n) => n.map((x) => x.textContent)), ['1', '2']);
+  ok('press and hold adds trails to the route in order, with distance');
+  await snap(page, '1c-plan');
+  await holdOn(ridgeA);
+  assert.deepEqual(await planIds(), ['1002']);
+  await page.click('#plan-undo');
+  assert.deepEqual(await planIds(), []);
+  assert.ok(await page.isHidden('#plan-bar'));
+  ok('holding again removes a trail; Undo removes the last one');
+  await page.mouse.click(...Object.values(await page.evaluate((q) => { const p = window.trailnav.map.project([q.lng, q.lat]); return { x: p.x, y: p.y }; }, ridgeB)));
+  await page.waitForSelector('#sheet #seg-plan');
+  assert.equal(await page.textContent('#sheet #seg-plan'), 'Add to route');
+  await page.click('#sheet #seg-plan');
+  assert.equal(await page.textContent('#sheet #seg-plan'), 'Remove from route (#1)');
+  assert.deepEqual(await planIds(), ['1002']);
+  page.once('dialog', (d) => d.accept());
+  await page.click('#plan-clear');
+  assert.deepEqual(await planIds(), []);
+  ok('"Add to route" in the trail panel; Clear empties the route');
+  await page.click('#sheet-close');
+
+  // Same with a finger: a real touch press-and-hold (as on a phone), then a normal tap still works.
+  const cdp = await context.newCDPSession(page);
+  const touchAt = async (p, ms) => {
+    const pt = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), p);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: pt.x, y: pt.y }] });
+    await page.waitForTimeout(ms);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(500);
+  };
+  await touchAt(ridgeB, 800);
+  assert.deepEqual(await planIds(), ['1002']);
+  assert.ok(await page.isHidden('#sheet'), 'touch hold does not also open the trail panel');
+  await touchAt(ridgeA, 80);
+  assert.deepEqual(await planIds(), ['1002'], 'a short tap does not add to the route');
+  await page.waitForSelector('#sheet #seg-plan');
+  ok('touch: hold adds to the route, a quick tap opens the trail panel');
+  await page.click('#plan-undo');
+  await page.click('#sheet-close');
+
   await page.fill('#search', 'Ridge');
   await page.waitForSelector('#search-results li .name');
   assert.equal(await page.textContent('#search-results li .name'), 'Ridge Summit');

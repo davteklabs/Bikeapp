@@ -11,6 +11,7 @@ accounts, or API keys.
 |---|---|
 | 🗺️ **Trail maps** | California only, opening at Granite Bay. Base maps (faded so trails stand out): OpenStreetMap (bike), OpenTopoMap (hike, with contours), CyclOSM. Every trail segment is drawn on top from data shipped with the app. Optional Waymarked Trails overlays for signed routes. |
 | 🟢 **Trail difficulty & names** | Tap a trail to highlight all of it and get directions to it. Segments are green, blue or black only when someone has actually rated them; everything else is grey (not rated). Most trails have no name in OpenStreetMap, so they can be named in the app (⚙ in the trail panel). Default ratings and names ship in `data/trail-info.json`; users can change them on their own device and export them in the same format. |
+| 🟣 **Route plan** | Press and hold a trail to add it to your route (hold again to remove). Picked segments glow purple with their order number; the route bar shows the total distance, with Undo and Clear. The plan is kept on the device. Joining the picks into one continuous route and navigating it is next. |
 | 🔎 **Search** | Find places, peaks, parks and trailheads (OpenStreetMap Nominatim). Tap anywhere on the map to drop a pin. |
 | 🧭 **Routing** | Bike-specific and foot-specific routing on OSM paths and tracks, with alternative routes, a step list, reverse, and a custom start point. |
 | 🗣️ **Live navigation** | Google Maps–style tilted view that turns to face your direction of travel, with you low on the screen and the route ahead. Big next-turn banner with distance-to-turn, voice prompts timed per activity, "then…" hints for back-to-back turns, ETA, remaining distance and speed. The screen stays on. |
@@ -58,6 +59,7 @@ js/instructions.js         OSRM maneuvers → "Turn left onto Ridge Trail" + ico
 js/trails.js               Overpass query for hiking/bicycle/MTB route relations
 js/segments.js             Loads shipped trail-segment tiles (data/trails/) by map view or trail name
 js/trail-info.js           Ratings and names: shipped defaults + the user's own edits, export
+js/plan.js                 Route plan: segments picked by press-and-hold, in order
 scripts/build-trails.mjs   Builds data/trails/ for a region from Overpass (see below)
 js/search.js               Nominatim search (rate-limited to 1 request/second)
 js/recorder.js             Track recording + GPX export

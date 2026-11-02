@@ -2,6 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tilesInBounds, tileKey, parseTile, segmentLabel, TILE_SIZE } from '../js/segments.js';
 import { effectiveRating, ratingColor, effectiveName, exportTrailInfo, RATINGS, UNRATED } from '../js/trail-info.js';
+import { togglePlanned, planIndex, planLength, midpoint } from '../js/plan.js';
+import { haversine } from '../js/geo.js';
+
+test('route plan: toggling adds in order and removes, length adds up', () => {
+  const a = { id: '1', name: 'A', kind: 'p', coords: [{ lat: 38.75, lng: -121.17 }, { lat: 38.751, lng: -121.17 }] };
+  const b = { id: '2', name: null, kind: 't', coords: [{ lat: 38.751, lng: -121.17 }, { lat: 38.753, lng: -121.17 }] };
+  let plan = togglePlanned([], a);
+  plan = togglePlanned(plan, b);
+  assert.deepEqual(plan.map((s) => s.id), ['1', '2']);
+  assert.equal(planIndex(plan, '2'), 1);
+  assert.ok(Math.abs(planLength(plan) - 3 * 111.2) < 1, planLength(plan));
+  plan = togglePlanned(plan, a);
+  assert.deepEqual(plan.map((s) => s.id), ['2']);
+  assert.equal(planIndex(plan, '1'), -1);
+  assert.ok(haversine(midpoint(b), { lat: 38.752, lng: -121.17 }) < 1);
+});
 
 test('tilesInBounds covers the box with aligned tiles', () => {
   const tiles = tilesInBounds({ south: 38.74, west: -121.19, north: 38.76, east: -121.14 });
