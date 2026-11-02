@@ -1347,6 +1347,7 @@ function setPlanPin(which, p) {
 
 let planTimer = null, planBuild = 0;
 function schedulePlanBuild(ms = 400) {
+  planBuild++; // a build still waiting on the router is for an older plan: don't let it land
   clearTimeout(planTimer);
   planTimer = setTimeout(buildPlanRoute, ms);
 }
