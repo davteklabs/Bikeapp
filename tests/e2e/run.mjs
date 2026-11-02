@@ -45,6 +45,8 @@ await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
 
 const page = await context.newPage();
 await page.addInitScript(() => {
+  // The checks below are written in metric; imperial is covered at the end.
+  localStorage.setItem('trailnav:settings', JSON.stringify({ units: 'metric', unitsChosen: true }));
   window.__spoken = [];
   const s = window.speechSynthesis;
   if (s) { s.speak = (u) => window.__spoken.push(u.text); s.cancel = () => {}; }
@@ -138,6 +140,12 @@ try {
   await page.waitForSelector('#sheet .settings');
   await snap(page, '6-layers');
   ok('layers & settings panel');
+
+  await page.selectOption('#units', 'imperial');
+  await page.click('#btn-trails');
+  await page.waitForSelector('.trail-list li');
+  assert.match(await page.textContent('.trail-list li'), /Hiking · P1 · 4\.7 mi/);
+  ok('switching units to imperial');
 
   assert.deepEqual(errors, [], 'no console errors');
   console.log(`\nAll ${step} e2e checks passed.`);

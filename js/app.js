@@ -11,9 +11,11 @@ import { formatDistance, formatDuration, formatSpeed, formatClock } from './form
 // ---------------------------------------------------------------- state ----
 const SETTINGS_KEY = 'trailnav:settings';
 const settings = Object.assign(
-  { mode: 'bike', units: 'metric', voice: true, base: null, overlays: null, view: null },
+  { mode: 'bike', units: 'imperial', voice: true, base: null, overlays: null, view: null },
   load(SETTINGS_KEY)
 );
+// Older versions saved the metric default without the user picking it; only keep units they chose.
+if (!settings.unitsChosen) settings.units = 'imperial';
 
 const state = {
   fix: null,            // latest GPS fix
@@ -656,7 +658,7 @@ $('#btn-layers').addEventListener('click', () => {
     root.querySelectorAll('input[name="ov"]').forEach((i) => (i.onchange = () => {
       settings.overlays = [...root.querySelectorAll('input[name="ov"]:checked')].map((x) => x.value); persistLayers();
     }));
-    root.querySelector('#units').onchange = (e) => { settings.units = e.target.value; save(SETTINGS_KEY, settings); };
+    root.querySelector('#units').onchange = (e) => { settings.units = e.target.value; settings.unitsChosen = true; save(SETTINGS_KEY, settings); };
     root.querySelector('#voice').onchange = (e) => { settings.voice = e.target.checked; save(SETTINGS_KEY, settings); };
   });
 });
