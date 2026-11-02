@@ -65,6 +65,8 @@ export function segmentTile() {
       [1001, 'Ridge Trail', 'p', [[CORNER.lng, CORNER.lat], [mid.lng, mid.lat]]],
       [1002, 'Ridge Trail', 'p', [[mid.lng, mid.lat], [END.lng, END.lat]]],
       [1003, null, 't', [[START.lng, START.lat - 0.002], [START.lng + 0.003, START.lat - 0.002]]],
+      // A canal maintenance road with no public access.
+      [1004, null, 'r', [[START.lng, START.lat + 0.002], [START.lng + 0.003, START.lat + 0.002]], 'p'],
     ],
   };
 }

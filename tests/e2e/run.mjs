@@ -35,6 +35,12 @@ await context.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, async (route) => {
   const url = route.request().url();
   const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body), headers: { 'Access-Control-Allow-Origin': '*' } });
   if (/\.png$/.test(url)) return route.fulfill({ contentType: 'image/png', body: PNG, headers: { 'Access-Control-Allow-Origin': '*' } });
+  // Water layer: a tile index and empty vector tiles.
+  if (url.includes('tiles.openfreemap.org')) {
+    if (url.endsWith('.pbf')) return route.fulfill({ contentType: 'application/x-protobuf', body: Buffer.alloc(0), headers: { 'Access-Control-Allow-Origin': '*' } });
+    return json({ tilejson: '3.0.0', tiles: ['https://tiles.openfreemap.org/test/{z}/{x}/{y}.pbf'], minzoom: 0, maxzoom: 14,
+      vector_layers: [{ id: 'water', fields: {} }, { id: 'waterway', fields: {} }] });
+  }
   if (url.includes('routing.openstreetmap.de')) {
     calls.route++;
     // Directions to END get the fixture route; anything else (links in a trail plan) a straight line.
@@ -90,6 +96,9 @@ try {
   await page.goto(`http://localhost:${port}/`);
   await page.waitForSelector('.me-marker', { timeout: 10000 });
   ok('map loads and shows GPS position');
+  const water = await page.evaluate(() => ['water', 'waterway', 'waterway-seasonal'].map((id) => window.trailnav.map.getLayer(id) && window.trailnav.map.getPaintProperty(id, id === 'water' ? 'fill-color' : 'line-color')));
+  assert.deepEqual(water, ['#bfe6fa', '#5bbfe8', '#5bbfe8']);
+  ok('water layers: lakes filled and rivers/canals drawn in light blue');
   await snap(page, '1-map');
 
   const segProps = () => page.evaluate(() => Object.fromEntries(
@@ -99,7 +108,9 @@ try {
   assert.equal(segs['1001'].color, '#1565c0', 'default rating shows blue');
   assert.equal(segs['1002'].color, '#6b7076', 'unrated shows grey');
   assert.equal(segs['1003'].color, '#6b7076', 'unrated shows grey');
-  ok('trail segments load, coloured only where rated (default blue, others grey)');
+  assert.equal(segs['1004'].private, true, 'no-public-access road is flagged (drawn dashed)');
+  assert.equal(segs['1003'].private, false);
+  ok('trail segments load, coloured only where rated (default blue, others grey); private ones flagged');
 
   // Tap the second half of Ridge Trail.
   const tap = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), { lng: CORNER.lng, lat: (CORNER.lat + 3 * END.lat) / 4 });

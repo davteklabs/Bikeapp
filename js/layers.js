@@ -39,6 +39,16 @@ export const OVERLAYS = {
 };
 
 /**
+ * Water (lakes, reservoirs, rivers, canals, creeks), drawn as sharp vector shapes on
+ * top of the faded base map so it stays clearly water. Light sky blue: distinct from
+ * the dark "blue" difficulty rating and the blue navigation route.
+ */
+export const WATER = {
+  source: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
+  fill: '#bfe6fa', outline: '#7ccbef', line: '#5bbfe8',
+};
+
+/**
  * Defaults per activity. The route overlays are off by default: their coloured
  * highlights (often blue) could be mistaken for difficulty ratings.
  */

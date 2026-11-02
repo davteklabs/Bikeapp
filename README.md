@@ -1,6 +1,6 @@
 # TrailNav — bike & hike navigation
 
-A "Google Maps for trails": open trail maps, phone GPS, and live voice turn-by-turn
+Turn-by-turn trail navigation: open trail maps, phone GPS, and live voice turn-by-turn
 directions for **cycling** and **hiking**. It's a Progressive Web App (PWA). It runs in any
 modern phone browser, you can install it to the home screen, and it needs no app store,
 accounts, or API keys.
@@ -14,10 +14,10 @@ accounts, or API keys.
 | 🟣 **Plan route** | Two modes: **Explore** (tap a trail for its info, rating and name) and **Plan route** (tap trails in the order you'll take them). You join trail #1 at its closest point to your start (GPS or a dropped pin), and #1 is ridden toward where #2 joins it, so the order sets the direction. Finish at the end of the last trail, back at the start (loop), or at a pin. The plan is built into one route with turn instructions where trails meet and trail-speed time estimates (about 7 mph riding, 2.7 mph hiking). Press and hold a trail in either mode to add/remove it. **Simulate** rides the route on screen at 3× speed for testing away from the trail. |
 | 🔎 **Search** | Find places, peaks, parks and trailheads (OpenStreetMap Nominatim). Tap anywhere on the map to drop a pin. |
 | 🧭 **Routing** | Bike-specific and foot-specific routing on OSM paths and tracks, with alternative routes, a step list, reverse, and a custom start point. |
-| 🗣️ **Live navigation** | Along a planned trail route, leaving the route tells you to head back to the trail (it never reroutes you off your trails); A-to-B directions reroute automatically. Google Maps–style tilted view that turns to face your direction of travel, with you low on the screen and the route ahead. Big next-turn banner with distance-to-turn, voice prompts timed per activity, "then…" hints for back-to-back turns, ETA, remaining distance and speed. The screen stays on. |
+| 🗣️ **Live navigation** | Along a planned trail route, leaving the route tells you to head back to the trail (it never reroutes you off your trails); A-to-B directions reroute automatically. Tilted view that turns to face your direction of travel, with you low on the screen and the route ahead. Big next-turn banner with distance-to-turn, voice prompts timed per activity, "then…" hints for back-to-back turns, ETA, remaining distance and speed. The screen stays on. |
 | ↩️ **Auto-reroute** | Detects when you leave the route (it takes GPS accuracy into account and needs several bad fixes in a row) and recalculates from where you are. |
 | 🥾 **Trails nearby** | Lists signed trails in the current view with type, ref, length and difficulty. Tap one to highlight it, then get directions to its closest point. |
-| ⏺️ **Track recording** | Records your ride or hike (auto-starts with navigation) with distance, time, moving speed and climb. Export as **GPX** for Strava, Komoot, etc. |
+| ⏺️ **Track recording** | Records your ride or hike (auto-starts with navigation) with distance, time, moving speed and climb. Export as **GPX** for other fitness and mapping apps. |
 | 📴 **Offline-friendly** | A service worker caches the app and up to 3,000 recently viewed map tiles, so the map keeps working when you lose signal. |
 | ⚙️ **Settings** | Metric or imperial units, voice on/off, choice of base map and overlays. Bike and Hike modes each have their own defaults. |
 

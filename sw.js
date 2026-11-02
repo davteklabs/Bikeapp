@@ -26,7 +26,8 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-const isTile = (url) => /\/\d+\/\d+\/\d+\.png$/.test(url.pathname);
+// Raster map images (.png) and vector map data (.pbf, e.g. the water layer).
+const isTile = (url) => /\/\d+\/\d+\/\d+\.(png|pbf)$/.test(url.pathname);
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;

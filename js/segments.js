@@ -1,9 +1,10 @@
-// Trail segments (individual OSM paths, tracks, footways, bridleways and cycleways),
-// prebuilt into small tiles by scripts/build-trails.mjs and shipped with the app,
-// so they load instantly and work offline. Each segment can carry a difficulty rating.
+// Trail segments: every walkable or rideable OSM way that isn't a paved road (paths,
+// tracks, footways, bridleways, cycleways, steps, unpaved minor roads), prebuilt into
+// small tiles by scripts/build-trails.mjs and shipped with the app, so they load
+// instantly and work offline. Each segment can carry a difficulty rating and name.
 
 export const TILE_SIZE = 0.05; // degrees
-export const HIGHWAY_LABEL = { p: 'Path', t: 'Track', f: 'Footway', b: 'Bridleway', c: 'Bike path' };
+export const HIGHWAY_LABEL = { p: 'Path', t: 'Track', f: 'Footway', b: 'Bridleway', c: 'Bike path', s: 'Steps', r: 'Dirt road' };
 
 export const tileKey = (row, col) => `${row}_${col}`;
 
@@ -21,10 +22,10 @@ export function tilesInBounds({ south, west, north, east }) {
   return out;
 }
 
-/** Tile file → segments: {id, name, kind, coords: [{lat,lng}]}. */
+/** Tile file → segments: {id, name, kind, coords: [{lat,lng}], private}. */
 export function parseTile(json) {
-  return (json.ways || []).map(([id, name, kind, coords]) => ({
-    id: String(id), name: name || '', kind, coords: coords.map(([lng, lat]) => ({ lat, lng })),
+  return (json.ways || []).map(([id, name, kind, coords, access]) => ({
+    id: String(id), name: name || '', kind, coords: coords.map(([lng, lat]) => ({ lat, lng })), private: access === 'p',
   }));
 }
 

@@ -7,7 +7,7 @@ import { polylineLength, pointAlong, cumulativeDistances } from './geo.js';
 /** Add the segment if it isn't in the plan, remove it if it is. Returns a new plan. */
 export function togglePlanned(plan, seg) {
   if (plan.some((s) => s.id === seg.id)) return plan.filter((s) => s.id !== seg.id);
-  return [...plan, { id: seg.id, name: seg.name, kind: seg.kind, coords: seg.coords }];
+  return [...plan, { id: seg.id, name: seg.name, kind: seg.kind, coords: seg.coords, private: !!seg.private }];
 }
 
 export const planIndex = (plan, id) => plan.findIndex((s) => s.id === id);

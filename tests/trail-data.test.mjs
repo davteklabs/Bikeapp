@@ -36,6 +36,10 @@ test('parseTile and labels', () => {
   assert.deepEqual(a.coords[0], { lat: 38.75, lng: -121.17 });
   assert.equal(segmentLabel(a), 'Jedi Trail');
   assert.equal(segmentLabel(b), 'Unnamed track');
+  assert.equal(a.private, false);
+  const [c] = parseTile({ ways: [[13, null, 'r', [[-121.1, 38.7], [-121.11, 38.71]], 'p']] });
+  assert.equal(c.private, true);
+  assert.equal(segmentLabel(c), 'Unnamed dirt road');
 });
 
 test('ratings: only real ratings get a colour, own ratings override defaults', () => {

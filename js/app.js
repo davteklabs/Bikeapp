@@ -1,5 +1,5 @@
 /* global maplibregl */
-import { BASE_LAYERS, OVERLAYS, MODE_DEFAULTS, REGION, inRegion } from './layers.js';
+import { BASE_LAYERS, OVERLAYS, MODE_DEFAULTS, REGION, inRegion, WATER } from './layers.js';
 import { searchPlaces, reverseGeocode } from './search.js';
 import { fetchRoutes } from './routing.js';
 import { Navigator } from './navigator.js';
@@ -81,6 +81,7 @@ const els = {
 // Zoom levels are one lower than Leaflet's for the same scale.
 const NAV_ZOOM = 17, NAV_PITCH = 60, CAMERA_MS = 1000;
 const EMPTY = { type: 'FeatureCollection', features: [] };
+const SEGMENT_LAYERS = ['segments', 'segments-private'];
 const ll = (p) => [p.lng, p.lat];
 const fc = (features) => ({ type: 'FeatureCollection', features });
 const lineFeature = (coords, properties = {}) =>
@@ -117,6 +118,7 @@ const map = (() => {
       sources: {
         ...Object.fromEntries(Object.entries(BASE_LAYERS).map(([k, d]) => [`base-${k}`, rasterSource(d)])),
         ...Object.fromEntries(Object.entries(OVERLAYS).map(([k, d]) => [`ov-${k}`, rasterSource(d)])),
+        water: WATER.source,
         trails: { type: 'geojson', data: EMPTY },
         segments: { type: 'geojson', data: EMPTY },
         plan: { type: 'geojson', data: EMPTY },
@@ -130,6 +132,24 @@ const map = (() => {
           paint: { 'raster-saturation': -0.75, 'raster-contrast': -0.3, 'raster-brightness-min': 0.3 } })),
         ...Object.entries(OVERLAYS).map(([k, d]) => ({ id: `ov-${k}`, source: `ov-${k}`, type: 'raster',
           layout: { visibility: visibility(`ov-${k}`, shown) }, paint: { 'raster-opacity': d.options.opacity ?? 1 } })),
+        // Water on top of the faded base: lakes filled, rivers/canals/creeks as lines,
+        // seasonal ones paler or dashed. Culverts (tunnels) aren't drawn.
+        { id: 'water', source: 'water', 'source-layer': 'water', type: 'fill',
+          filter: ['all', ['!=', ['get', 'class'], 'swimming_pool'], ['!=', ['get', 'brunnel'], 'tunnel']],
+          paint: { 'fill-color': WATER.fill, 'fill-outline-color': WATER.outline, 'fill-opacity': ['case', ['==', ['get', 'intermittent'], 1], 0.5, 0.95] } },
+        ...[['waterway', ['!=', ['get', 'intermittent'], 1], {}], ['waterway-seasonal', ['==', ['get', 'intermittent'], 1], { 'line-dasharray': [2, 2] }]]
+          .map(([id, seasonal, extra]) => ({
+            id, source: 'water', 'source-layer': 'waterway', type: 'line', minzoom: 8,
+            filter: ['all', seasonal, ['!=', ['get', 'brunnel'], 'tunnel']],
+            layout: { 'line-join': 'round', 'line-cap': extra['line-dasharray'] ? 'butt' : 'round' },
+            paint: {
+              'line-color': WATER.line,
+              'line-width': ['interpolate', ['linear'], ['zoom'],
+                10, ['match', ['get', 'class'], ['river', 'canal'], 1.5, 0.6],
+                16, ['match', ['get', 'class'], 'river', 7, 'canal', 4.5, 2.5]],
+              ...extra,
+            },
+          })),
         // Signed routes from "Trails nearby": a wide amber glow under the segments, in a
         // colour that can't be confused with a difficulty rating.
         lineLayer('trails', 'trails', {
@@ -154,10 +174,13 @@ const map = (() => {
           'line-color': '#fff', 'line-opacity': 0.9,
           'line-width': ['interpolate', ['linear'], ['zoom'], 12, ['case', selected, 8, 4], 16, ['case', selected, 12, 8]],
         }, { layout: { 'line-sort-key': ['case', selected, 1, 0] } }), minzoom: 12 },
-        { ...lineLayer('segments', 'segments', {
-          'line-color': ['get', 'color'],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 12, ['case', selected, 5, 2], 16, ['case', selected, 8, 5]],
-        }, { layout: { 'line-sort-key': ['case', selected, 1, 0] } }), minzoom: 12 },
+        // Segments with no public access (marked private) are dashed.
+        ...[['segments', ['!=', ['get', 'private'], true], {}], ['segments-private', ['==', ['get', 'private'], true], { 'line-dasharray': [1.5, 1.2] }]]
+          .map(([id, filter, extra]) => ({ ...lineLayer(id, 'segments', {
+            'line-color': ['get', 'color'],
+            'line-width': ['interpolate', ['linear'], ['zoom'], 12, ['case', selected, 5, 2], 16, ['case', selected, 8, 5]],
+            ...extra,
+          }, { filter, layout: { 'line-sort-key': ['case', selected, 1, 0], ...(extra['line-dasharray'] && { 'line-cap': 'butt' }) } }), minzoom: 12 })),
         { id: 'accuracy', source: 'accuracy', type: 'fill', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.1, 'fill-outline-color': '#1a73e8' } },
         lineLayer('route-alt', 'routes', { 'line-color': '#8aa4c8', 'line-width': 6, 'line-opacity': 0.8 }, { filter: ['==', ['get', 'active'], false] }),
         lineLayer('route-casing', 'routes', { 'line-color': '#fff', 'line-width': 10, 'line-opacity': 0.9 }, { filter: ['==', ['get', 'active'], true] }),
@@ -222,7 +245,7 @@ function cancelHold() {
   hold = null;
 }
 function holdAt({ x, y }, lngLat) {
-  const segs = map.queryRenderedFeatures([[x - 16, y - 16], [x + 16, y + 16]], { layers: ['segments'] })
+  const segs = map.queryRenderedFeatures([[x - 16, y - 16], [x + 16, y + 16]], { layers: SEGMENT_LAYERS })
     .map((h) => segmentStore.segments.get(h.properties.id)).filter(Boolean);
   if (!segs.length) return;
   holdHandled = true; // swallow the click that follows the release
@@ -245,10 +268,10 @@ map.on('click', (e) => {
   if (!els.results.hidden) { els.results.hidden = true; return; }
   // Lines are thin, so accept taps a little way off them.
   const { x, y } = e.point;
-  const hits = map.queryRenderedFeatures([[x - 16, y - 16], [x + 16, y + 16]], { layers: ['route-alt', 'segments', 'trails'] });
+  const hits = map.queryRenderedFeatures([[x - 16, y - 16], [x + 16, y + 16]], { layers: ['route-alt', ...SEGMENT_LAYERS, 'trails'] });
   const alt = hits.find((h) => h.layer.id === 'route-alt');
   if (alt) { selectRoute(alt.properties.i); return; }
-  const segs = hits.filter((h) => h.layer.id === 'segments').map((h) => segmentStore.segments.get(h.properties.id)).filter(Boolean);
+  const segs = hits.filter((h) => SEGMENT_LAYERS.includes(h.layer.id)).map((h) => segmentStore.segments.get(h.properties.id)).filter(Boolean);
   if (state.view === 'plan') {
     // Plan mode: a tap places a pin being picked, or adds/removes a trail.
     if (state.picking) { setPlanPin(state.picking, e.lngLat); return; }
@@ -264,7 +287,7 @@ map.on('click', (e) => {
 
 const trailTip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'trail-tip', offset: 10 });
 whenReady(() => {
-  for (const layer of ['segments', 'trails']) {
+  for (const layer of [...SEGMENT_LAYERS, 'trails']) {
     map.on('mousemove', layer, (e) => {
       map.getCanvas().style.cursor = 'pointer';
       trailTip.setLngLat(e.lngLat).setText(e.features[0].properties.name).addTo(map);
@@ -860,6 +883,7 @@ function drawSegments() {
       name: segmentLabel(s, name),
       color: ratingColor(effectiveRating(s.id, defaultInfo, myRatings).rating),
       hl: !h ? 0 : s.id === h.id ? 2 : h.name && name === h.name ? 1 : 0,
+      private: !!s.private,
     });
   })));
 }
@@ -921,6 +945,7 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     <div class="muted meta"></div>
     <div class="muted trail-len"></div>
     <div class="rating-now"><span class="swatch"></span><span class="txt"></span></div>
+    ${seg.private ? '<p class="no-access">No public access: marked private in the map data. Check before using it.</p>' : ''}
     <div class="row actions">
       <button class="btn primary" id="seg-go">Navigate this trail</button>
       <button class="btn" id="seg-plan"></button>
@@ -1178,6 +1203,7 @@ function renderPlanPanel() {
     <div class="plan-row"><span class="pin-dot end"></span><b>End</b>
       <select id="end-mode"><option value="trail">End of the last trail</option><option value="start">Back to the start (loop)</option><option value="pin">A pin on the map</option></select>
       <button class="btn small" id="pick-end" hidden></button></div>
+    ${state.plan.some((s) => s.private) ? '<p class="no-access">Includes sections with no public access (marked private). Check before using them.</p>' : ''}
     <div class="summary plan-summary"></div>
     <div class="row actions">
       <button class="btn primary" id="plan-go" ${r ? '' : 'disabled'}>▶ Start navigation</button>
@@ -1356,7 +1382,7 @@ $('#btn-layers').addEventListener('click', () => {
       <h3>Trail overlays</h3>
       ${Object.entries(OVERLAYS).map(([k, d]) => `<label><input type="checkbox" name="ov" value="${k}" ${overlays.includes(k) ? 'checked' : ''}> ${d.name}</label>`).join('')}
       <h3>Trail difficulty</h3>
-      <div class="legend">${[...Object.values(RATINGS), UNRATED].map((r) => `<span><i style="background:${r.color}"></i>${r.label}</span>`).join('')}</div>
+      <div class="legend">${[...Object.values(RATINGS), UNRATED].map((r) => `<span><i style="background:${r.color}"></i>${r.label}</span>`).join('')}<span><i style="background:${WATER.line}"></i>Water</span><span><i class="dashed"></i>No public access</span></div>
       <p class="muted note">Zoom in and tap a trail to rate or rename it. Grey only means nobody has rated it yet. It says nothing about how hard the trail is.</p>
       <p class="note">On this device: <b id="my-count"></b> ratings, <b id="my-names"></b> names.</p>
       <button class="btn" id="export-ratings">Export ratings &amp; names</button>
