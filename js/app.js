@@ -5,7 +5,7 @@ import { fetchRoutes } from './routing.js';
 import { Navigator } from './navigator.js';
 import { TrackRecorder } from './recorder.js';
 import { fetchTrails, nearestPointOnTrail, ROUTE_LABEL } from './trails.js';
-import { SegmentStore, segmentLabel, HIGHWAY_LABEL } from './segments.js';
+import { SegmentStore, segmentLabel, HIGHWAY_LABEL, trailWindow, segmentBounds, intersects } from './segments.js';
 import { togglePlanned, planIndex, planLength, midpoint } from './plan.js';
 import { planPieces, chainSegments, assembleRoute, TRAIL_SPEED, JOIN_GAP } from './trailroute.js';
 import { snapToLines, assembleStroke, densify, eraseAt, simplify, strokeLength } from './draw.js';
@@ -567,9 +567,11 @@ async function showPlace(place, { lookup = false } = {}) {
       const n = els.sheetBody.querySelector('.place-name'); if (n) n.textContent = name;
     }
   }
-  // A spot on a named trail we have data for: highlight the whole trail.
-  if (sheetSeq !== mine || !(await segmentStore.hasName(place.name))) return;
-  const segs = await highlightTrail(place.name);
+  // A spot on a named trail we have data for: highlight the trail around it.
+  if (sheetSeq !== mine || !place.name) return;
+  await segmentStore.loadTrail(place.name, place);
+  if (sheetSeq !== mine || !segmentsNamed(place.name, place).length) return;
+  const segs = await highlightTrail(place.name, null, place);
   const btn = els.sheetBody.querySelector('[data-act="view-trail"]');
   if (sheetSeq === mine && btn && segs.length) {
     btn.hidden = false;
@@ -903,7 +905,12 @@ async function loadSegments() {
 /** A segment's name: your own, the TrailNav default, or the map's (null if none). */
 const nameOf = (s) => effectiveName(s.id, s.name, defaultInfo, myNames).name;
 const labelOf = (s) => segmentLabel(s, nameOf(s));
-const segmentsNamed = (name) => (name ? [...segmentStore.segments.values()].filter((s) => nameOf(s) === name) : []);
+/** The segments of a named trail around a point (a name can repeat elsewhere in the state). */
+function segmentsNamed(name, near) {
+  if (!name) return [];
+  const win = trailWindow(near);
+  return [...segmentStore.segments.values()].filter((s) => nameOf(s) === name && intersects(segmentBounds(s), win));
+}
 
 function drawSegments() {
   const h = state.highlight;
@@ -913,7 +920,7 @@ function drawSegments() {
       id: s.id,
       name: segmentLabel(s, name),
       color: ratingColor(effectiveRating(s.id, defaultInfo, myRatings).rating),
-      hl: !h ? 0 : s.id === h.id ? 2 : h.name && name === h.name ? 1 : 0,
+      hl: !h ? 0 : s.id === h.id ? 2 : h.name && name === h.name && intersects(segmentBounds(s), h.win) ? 1 : 0,
       private: !!s.private,
     });
   })));
@@ -925,13 +932,13 @@ function unselectSegment() {
   drawSegments();
 }
 
-/** Highlight a whole named trail (loading every tile it runs through). */
-async function highlightTrail(name, id = null) {
-  state.highlight = { name, id };
+/** Highlight a named trail around a point (loading the tiles it runs through there). */
+async function highlightTrail(name, id, near) {
+  state.highlight = { name, id, win: trailWindow(near) };
   drawSegments();
-  if (name) await segmentStore.loadTrail(name);
+  if (name) await segmentStore.loadTrail(name, near);
   if (state.highlight?.name === name) drawSegments();
-  return segmentsNamed(name);
+  return segmentsNamed(name, near);
 }
 
 function nearestSegment(segs, p) {
@@ -964,6 +971,7 @@ const GEAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12
 async function showSegment(seg, { fit = true, editing = false } = {}) {
   const { rating } = effectiveRating(seg.id, defaultInfo, myRatings);
   const name = nameOf(seg);
+  const near = midpoint(seg);
   const lastName = load(LAST_NAME_KEY).name;
   const choices = [...Object.entries(RATINGS), ['unrated', UNRATED]];
   const again = () => showSegment(seg, { fit: false, editing: true });
@@ -1024,7 +1032,7 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     root.querySelector('#seg-go').onclick = () => {
       if (state.plan.length && !confirm('Replace your current route with this trail?')) return;
       const from = state.planStart || state.fix || map.getCenter();
-      const trail = segmentsNamed(name).length ? segmentsNamed(name) : [seg];
+      const trail = segmentsNamed(name, near).length ? segmentsNamed(name, near) : [seg];
       state.plan = chainSegments(trail, { lat: from.lat, lng: from.lng }).reduce((plan, s) => togglePlanned(plan, s), []);
       savePlan();
       setView('plan');
@@ -1046,7 +1054,7 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     root.querySelector('#name-reset').onclick = () => { setNames([seg], ''); again(); };
     form.onsubmit = (e) => {
       e.preventDefault();
-      setNames(root.querySelector('#name-all').checked ? segmentsNamed(name) : [seg], input.value.trim());
+      setNames(root.querySelector('#name-all').checked ? segmentsNamed(name, near) : [seg], input.value.trim());
       again();
     };
     if (lastName && lastName !== name) {
@@ -1061,7 +1069,7 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
     root.querySelector('.rating-now .txt').textContent = ratingText(seg.id);
     root.querySelector('#rate-reset').hidden = !myRatings[seg.id];
     root.querySelectorAll('.rate').forEach((b) => (b.onclick = () => {
-      const targets = root.querySelector('#rate-all').checked ? segmentsNamed(name) : [seg];
+      const targets = root.querySelector('#rate-all').checked ? segmentsNamed(name, near) : [seg];
       for (const s of targets) {
         // Only store what differs from the shipped default.
         const def = effectiveRating(s.id, defaultInfo, {}).rating || 'unrated';
@@ -1076,10 +1084,13 @@ async function showSegment(seg, { fit = true, editing = false } = {}) {
 
   // Highlight the whole trail and show all of it.
   const root = els.sheetBody;
-  const named = name ? await highlightTrail(name, seg.id) : (await highlightTrail(null, seg.id), [seg]);
+  const named = name ? await highlightTrail(name, seg.id, near) : (await highlightTrail(null, seg.id, near), [seg]);
   if (state.highlight?.id !== seg.id) return; // another trail was tapped meanwhile
   if (named.length > 1) {
-    root.querySelector('.trail-len').textContent = `Whole trail ${formatDistance(named.reduce((d, s) => d + polylineLength(s.coords), 0), settings.units)} in ${named.length} segments (highlighted)`;
+    const length = formatDistance(named.reduce((d, s) => d + polylineLength(s.coords), 0), settings.units);
+    root.querySelector('.trail-len').textContent = segmentStore.continuesBeyond(name, near)
+      ? `${length} of this trail around here, in ${named.length} segments (highlighted); it continues further`
+      : `Whole trail ${length} in ${named.length} segments (highlighted)`;
     for (const [sel, text] of [['#rate-all', `Apply to all ${named.length} segments of “${name}”`], ['#name-all', `Rename all ${named.length} segments of “${name}”`]]) {
       const label = root.querySelector(sel).closest('label');
       label.hidden = false;

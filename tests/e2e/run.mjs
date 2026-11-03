@@ -64,7 +64,6 @@ await context.route(/\/data\/(trails\/|trail-info\.json)/, (route) => {
   const json = (body) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
   if (url.endsWith('/trail-info.json')) return json({ trails: { 1001: { rating: 'blue' } } });
   if (url.endsWith('/index.json')) return json({ v: 1, tiles: segmentKeys, regions: [] });
-  if (url.endsWith('/names.json')) return json({ 'Ridge Trail': segmentKeys });
   return json(segmentTile());
 });
 

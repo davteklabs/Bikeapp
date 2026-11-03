@@ -9,8 +9,8 @@ accounts, or API keys.
 
 | | |
 |---|---|
-| 🗺️ **Trail maps** | California only, opening at Granite Bay. Base maps (faded so trails stand out): OpenStreetMap (bike), OpenTopoMap (hike, with contours), CyclOSM. Every trail segment is drawn on top from data shipped with the app. Optional Waymarked Trails overlays for signed routes. |
-| 🟢 **Trail difficulty & names** | Tap a trail to highlight all of it and get directions to it. Segments are green, blue or black only when someone has actually rated them; everything else is grey (not rated). Most trails have no name in OpenStreetMap, so they can be named in the app (⚙ in the trail panel). Default ratings and names ship in `data/trail-info.json`; users can change them on their own device and export them in the same format. |
+| 🗺️ **Trail maps** | California only, opening at Granite Bay. Base maps (faded so trails stand out): OpenStreetMap (bike), OpenTopoMap (hike, with contours), CyclOSM. Every path, track, footway, bridleway, bike path, steps and dirt road in California is drawn on top from data shipped with the app; ones with no public access are dashed. Optional Waymarked Trails overlays for signed routes. |
+| 🟢 **Trail difficulty & names** | Tap a trail to highlight it and get directions to it (a long trail is highlighted for about 20 miles each way from where you tap). Segments are green, blue or black only when someone has actually rated them; everything else is grey (not rated). Most trails have no name in OpenStreetMap, so they can be named in the app (⚙ in the trail panel). Default ratings and names ship in `data/trail-info.json`; users can change them on their own device and export them in the same format. |
 | 🟣 **Plan route** | Two modes: **Explore** (tap a trail for its info, rating and name) and **Plan route** (tap trails in the order you'll take them). You join trail #1 at its closest point to your start (GPS or a dropped pin), and #1 is ridden toward where #2 joins it, so the order sets the direction. Finish at the end of the last trail, back at the start (loop), or at a pin. The plan is built into one route with turn instructions where trails meet and trail-speed time estimates (about 7 mph riding, 2.7 mph hiking). Press and hold a trail in either mode to add/remove it. **Simulate** rides the route on screen at 3× speed for testing away from the trail. |
 | ✏️ **Draw a trail** | Pen button: drag to draw a trail. By default the line snaps to paths and roads already on the map and follows their curves; switch Snap off to draw freehand. Eraser, Undo, Move map, Cancel, Save. Saved trails work like any other (rate, name, plan, navigate) and are exported with ratings and names. |
 | 💧 **Water** | Lakes and reservoirs with a wave texture, rivers, canals and creeks in blue, darker than the faded land so they stand out even without colour. |
@@ -64,7 +64,8 @@ js/trail-info.js           Ratings and names: shipped defaults + the user's own 
 js/plan.js                 Route plan: trail segments picked, in order
 js/trailroute.js           Builds a planned route along the picked trails: entry point, direction, turns
 js/draw.js                 Drawing trails: snapping to map lines, following their shape, erasing, simplifying
-scripts/build-trails.mjs   Builds data/trails/ for a region from Overpass (see below)
+scripts/build-trails.mjs   Builds data/trails/ from an OpenStreetMap extract file (see below)
+scripts/osm-pbf.mjs        Reads .osm.pbf extract files
 js/search.js               Nominatim search (rate-limited to 1 request/second)
 js/recorder.js             Track recording + GPX export
 js/geo.js, js/format.js    Geometry and unit formatting
@@ -73,15 +74,19 @@ sw.js                      Offline app shell + tile cache
 
 ### Trail data and difficulty ratings
 
-Trail segments are prebuilt, not fetched live: the public Overpass servers took 40–90 s per
-query when tested, too slow for use on the trail. To add or refresh an area:
+Trail segments are prebuilt, not fetched live, from the California OpenStreetMap extract
+published by Geofabrik (about 1.3 GB, updated daily). To refresh them:
 
 ```bash
-node scripts/build-trails.mjs folsom-lake 38.64 -121.26 38.90 -121.02   # name south west north east
+curl -L -o logs/geofabrik/california.osm.pbf https://download.geofabrik.de/north-america/us/california-latest.osm.pbf
+node scripts/build-trails.mjs logs/geofabrik/california.osm.pbf
 ```
 
-This writes `data/trails/index.json`, `names.json` and `tiles/*.json` (0.05° tiles). Raw Overpass
-responses are kept in `logs/overpass-raw/` so a rebuild doesn't download again.
+This takes about two minutes and replaces `data/trails/`: `index.json` and `tiles/*.json`
+(0.05° tiles, about 16,000 files and 185 MB). The app loads the tiles in view, keeps at most
+120 in memory, and the ones you've viewed stay cached for offline use. Each tile lists, for
+each trail in it, the nearby tiles the trail continues into, so tapping a trail loads the
+rest of it around that spot.
 
 Ratings and names live in `data/trail-info.json`, keyed by OpenStreetMap way ID. To update the
 defaults: rate and name trails in the app, then **Map & settings → Export ratings & names**, and

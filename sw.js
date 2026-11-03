@@ -1,18 +1,21 @@
 // Service worker: offline app shell + a bounded cache of map tiles you've viewed,
 // so the map keeps working when signal drops out on the trail.
-const SHELL = 'trailnav-shell-v3';
+const SHELL = 'trailnav-shell-v4';
 const TILES = 'trailnav-tiles-v1';
 const MAX_TILES = 3000;
+const TRAILS = 'trailnav-trails-v1';
+const MAX_TRAIL_TILES = 1500;
 
 const SHELL_FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'vendor/maplibre-gl/maplibre-gl.css', 'vendor/maplibre-gl/maplibre-gl.js',
   'js/app.js', 'js/geo.js', 'js/format.js', 'js/instructions.js', 'js/routing.js', 'js/navigator.js',
   'js/recorder.js', 'js/trails.js', 'js/search.js', 'js/layers.js', 'js/segments.js', 'js/trail-info.js', 'js/plan.js', 'js/trailroute.js', 'js/draw.js',
-  'data/trail-info.json', 'data/trails/index.json', 'data/trails/names.json',
+  'data/trail-info.json', 'data/trails/index.json',
 ];
-// Trail segment tiles (data/trails/tiles/*) are same-origin, so they're cached as
-// they're viewed by the app-shell handler below and keep working offline.
+// Trail segment tiles (data/trails/tiles/*) are cached as they're viewed, in their own
+// bounded cache, so the places you've looked at keep working offline.
+const isTrailTile = (url) => url.pathname.includes('/data/trails/tiles/');
 
 self.addEventListener('install', (e) => {
   // 'reload': fetch fresh copies, never the browser's possibly older cached ones.
@@ -22,7 +25,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== SHELL && k !== TILES).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => ![SHELL, TILES, TRAILS].includes(k)).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -41,7 +44,10 @@ self.addEventListener('fetch', (e) => {
     // file for 10 minutes, and a new page could load with older scripts.
     e.respondWith(
       fetch(req, { cache: 'no-cache' }).then((res) => {
-        if (res.ok) caches.open(SHELL).then((c) => c.put(req, res.clone()));
+        if (res.ok) {
+          const trail = isTrailTile(url), copy = res.clone(); // clone now, before the page reads the body
+          caches.open(trail ? TRAILS : SHELL).then((c) => c.put(req, copy)).then(() => trail && trim(TRAILS, MAX_TRAIL_TILES));
+        }
         return res;
       }).catch(() => caches.match(req, { ignoreSearch: true }))
     );
@@ -54,7 +60,7 @@ self.addEventListener('fetch', (e) => {
       caches.open(TILES).then(async (cache) => {
         const hit = await cache.match(req);
         const net = fetch(req).then((res) => {
-          if (res.ok || res.type === 'opaque') { cache.put(req, res.clone()); trim(cache); }
+          if (res.ok || res.type === 'opaque') cache.put(req, res.clone()).then(() => trim(TILES, MAX_TILES));
           return res;
         }).catch(() => hit);
         return hit || net;
@@ -64,14 +70,16 @@ self.addEventListener('fetch', (e) => {
   // Everything else (routing, search, Overpass) goes straight to the network.
 });
 
-let trimming = false;
-async function trim(cache) {
-  if (trimming) return;
-  trimming = true;
+// Drop the oldest entries beyond max (one trim per cache at a time).
+const trimming = new Set();
+async function trim(name, max) {
+  if (trimming.has(name)) return;
+  trimming.add(name);
   try {
+    const cache = await caches.open(name);
     const keys = await cache.keys();
-    for (let i = 0; i < keys.length - MAX_TILES; i++) await cache.delete(keys[i]);
+    for (let i = 0; i < keys.length - max; i++) await cache.delete(keys[i]);
   } finally {
-    trimming = false;
+    trimming.delete(name);
   }
 }
