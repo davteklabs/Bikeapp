@@ -36,8 +36,8 @@ test('navigator tracks progress, announces turn, and arrives', () => {
   const nav = new Navigator(route(), { mode: 'bike' });
   const spoken = [];
   let st;
-  // Ride east in 25 m increments.
-  for (let t = 0; t <= 1.0001; t += 0.05) {
+  // Ride east at 5 m/s with a fix every second.
+  for (let t = 0; t <= 1.0001; t += 0.01) {
     st = nav.update({ ...lerp(START, CORNER, t), accuracy: 5, speed: 5, timestamp: 0 });
     spoken.push(...st.announcements);
     if (t < 0.9) {
@@ -60,6 +60,47 @@ test('navigator tracks progress, announces turn, and arrives', () => {
   assert.equal(st.arrived, true);
   assert.ok(spoken.includes('You have arrived at your destination'));
   assert.ok(st.remaining < 25);
+});
+
+// Ride from START to the corner at `speed` m/s with a fix every second; returns
+// [distance to the turn, prompt] for everything said about the turn.
+function rideToTurn(opts, speed) {
+  const nav = new Navigator(route(), opts);
+  const said = [];
+  for (let d = 0; d <= 500; d += speed) {
+    const st = nav.update({ ...lerp(START, CORNER, d / 500), accuracy: 5, speed, timestamp: 0 });
+    for (const a of st.announcements) if (/turn left/i.test(a)) said.push([st.distToManeuver, a]);
+  }
+  return said;
+}
+
+test('turn prompts come close to the turn, in feet', () => {
+  const ft = (m) => m * 3.28084, feet = (text) => Number(text.match(/In (\d+) feet/)[1]);
+  // Bike at 5 m/s (11 mph): about 100 ft, then the turn at about 40 ft.
+  let said = rideToTurn({ mode: 'bike', units: 'imperial' }, 5);
+  assert.equal(said.length, 2, JSON.stringify(said));
+  assert.match(said[0][1], /^In \d+ feet, turn left onto Ridge Trail$/);
+  assert.ok(feet(said[0][1]) >= 80 && feet(said[0][1]) <= 100, said[0][1]);
+  assert.ok(ft(said[0][0]) <= 100, said[0][0]);
+  assert.equal(said[1][1], 'Turn left onto Ridge Trail');
+  assert.ok(ft(said[1][0]) <= 40 && said[1][0] >= 3, said[1][0]);
+  // Walking at 1.4 m/s: about 50 ft, then about 20 ft.
+  said = rideToTurn({ mode: 'hike', units: 'imperial' }, 1.4);
+  assert.equal(said.length, 2, JSON.stringify(said));
+  assert.match(said[0][1], /^In \d+ feet, turn left onto Ridge Trail$/);
+  assert.ok(feet(said[0][1]) >= 40 && feet(said[0][1]) <= 50, said[0][1]);
+  assert.equal(said[1][1], 'Turn left onto Ridge Trail');
+  assert.ok(ft(said[1][0]) <= 20 && said[1][0] >= 3, said[1][0]);
+});
+
+test('going fast moves the turn prompts earlier so they still come before the turn', () => {
+  // 9 m/s (20 mph) with a fix every 9 m.
+  const said = rideToTurn({ mode: 'bike', units: 'imperial' }, 9);
+  assert.equal(said.length, 2, JSON.stringify(said));
+  assert.equal(said[1][1], 'Turn left onto Ridge Trail');
+  // At least 1 s before the turn, never more than 2 s plus one fix early.
+  assert.ok(said[1][0] >= 9 && said[1][0] <= 9 * 3, said[1][0]);
+  assert.ok(said[0][0] <= 9 * 6, said[0][0]);
 });
 
 test('navigator flags off-route only after consecutive bad fixes', () => {

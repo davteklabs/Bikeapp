@@ -7,8 +7,8 @@
 import { cumulativeDistances, snapToPolyline, pointAlong, haversine, bearing, angleDiff } from './geo.js';
 import { instructionText, instructionIcon } from './instructions.js';
 
-/** Typical moving speeds on trails (m/s): about 7 mph riding, 2.7 mph hiking. */
-export const TRAIL_SPEED = { bike: 3.1, hike: 1.2 };
+/** Typical moving speeds on trails (m/s): 5 mph riding, 2.7 mph hiking. */
+export const TRAIL_SPEED = { bike: 2.2352, hike: 1.2 };
 /** Pieces closer than this (m) are treated as joined; further apart needs a link. */
 export const JOIN_GAP = 25;
 

@@ -12,6 +12,10 @@ test('formatting', () => {
   assert.equal(formatDistance(100, 'imperial'), '330 ft');
   assert.equal(formatDuration(3720), '1 h 02 min');
   assert.equal(spokenDistance(120), '100 metres');
+  assert.equal(spokenDistance(30, 'imperial'), '100 feet');
+  assert.equal(spokenDistance(12, 'imperial'), '40 feet');
+  assert.equal(spokenDistance(1, 'imperial'), '10 feet');
+  assert.equal(spokenDistance(100, 'imperial'), '350 feet');
   assert.equal(formatSpeed(5), '18.0 km/h');
 });
 

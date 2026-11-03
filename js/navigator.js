@@ -6,9 +6,12 @@ import { snapToPolyline, haversine, bearing, pointAlong } from './geo.js';
 import { spokenDistance } from './format.js';
 
 const MODE_CONFIG = {
-  // Distances (m) before a maneuver at which a voice prompt is given.
-  bike: { prompts: [400, 120, 25], offRoute: 35, arrive: 25 },
-  hike: { prompts: [150, 40, 12], offRoute: 30, arrive: 15 },
+  // Distances (m) before a maneuver at which a voice prompt is given: a heads-up, then the
+  // turn itself (bike 100 ft and 40 ft, hike 50 ft and 20 ft). Going fast moves each one
+  // earlier so it still comes at least `lead` seconds before the turn.
+  // `reassure`: after a turn, say how far to the next one if it's further than this.
+  bike: { prompts: [30, 12], lead: [5, 2], reassure: 800, offRoute: 35, arrive: 25 },
+  hike: { prompts: [15, 6], lead: [5, 2], reassure: 300, offRoute: 30, arrive: 15 },
 };
 
 export class Navigator {
@@ -85,7 +88,7 @@ export class Navigator {
     const speed = this.speedEma != null && this.speedEma > 0.7 ? this.speedEma : this.routeSpeed;
     const remainingTime = remaining / speed;
 
-    const announcements = this.arrived ? this.arrivalAnnouncement() : offRoute ? [] : this.announce(stepIndex, distToManeuver);
+    const announcements = this.arrived ? this.arrivalAnnouncement() : offRoute ? [] : this.announce(stepIndex, distToManeuver, speed);
     this.lastStepIndex = stepIndex;
 
     // Direction of travel along the route, looking a little ahead so the map
@@ -115,15 +118,16 @@ export class Navigator {
     };
   }
 
-  announce(stepIndex, dist) {
+  announce(stepIndex, dist, speed) {
     const steps = this.route.steps;
     const step = steps[stepIndex];
-    const prompts = this.cfg.prompts;
+    const { lead, reassure } = this.cfg;
+    const prompts = this.cfg.prompts.map((d, t) => Math.max(d, speed * lead[t]));
     const gap = step.along - (steps[stepIndex - 1]?.along ?? 0);
     const out = [];
 
     // Just completed a maneuver and the next one is far away: reassure.
-    if (stepIndex !== this.lastStepIndex && this.lastStepIndex !== -1 && dist > prompts[0] * 2) {
+    if (stepIndex !== this.lastStepIndex && this.lastStepIndex !== -1 && dist > reassure) {
       out.push(`Continue for ${spokenDistance(dist, this.units)}`);
     }
 

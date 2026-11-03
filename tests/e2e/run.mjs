@@ -272,7 +272,7 @@ try {
   }, cond, { timeout: 8000 }).then((h) => h.jsonValue());
   const planSteps = (await settled({ n: 2 })).steps;
   assert.deepEqual(planSteps, ['Head east', 'Turn left onto Ridge Trail', 'Arrive at your end point']);
-  assert.match(await page.textContent('#sheet .plan-summary'), /4 min.*800 m.*incl\. 500 m off the picked trails/);
+  assert.match(await page.textContent('#sheet .plan-summary'), /6 min.*800 m.*incl\. 500 m off the picked trails/);
   ok('plan mode: tap trails in order; route joins #1 at its closest point and turns onto it');
   await snap(page, '1d-plan-mode');
 
@@ -291,12 +291,15 @@ try {
   await page.click('#sheet #plan-sim');
   await page.waitForSelector('#nav-banner:not([hidden])');
   assert.equal(await page.textContent('#nav-text'), 'Turn left onto Ridge Trail');
-  const d0 = parseInt(await page.textContent('#nav-dist'));
+  const along = () => page.evaluate(() => window.trailnav.state.nav.along);
+  const a0 = await along();
   await page.waitForTimeout(3200);
-  const d1 = parseInt(await page.textContent('#nav-dist'));
-  assert.ok(d1 < d0 - 15, `moving toward the turn (${d0} → ${d1} m)`);
+  const a1 = await along();
+  // Riding speed, 5 mph (2.24 m/s): about 7 m in 3 s.
+  assert.ok(a1 - a0 > 4 && a1 - a0 < 12, `moving along at riding speed (${a0.toFixed(1)} → ${a1.toFixed(1)} m)`);
+  assert.equal(await page.textContent('#nav-speed'), '8.0 km/h');
   assert.ok(await page.evaluate(() => window.trailnav.map.getPitch()) > 50);
-  ok(`simulated ride navigates along the plan (${d0} m → ${d1} m to the turn)`);
+  ok(`simulated ride navigates along the plan at riding speed (${(a1 - a0).toFixed(1)} m in 3.2 s)`);
   await snap(page, '1e-simulate');
   await page.click('#btn-end');
   assert.equal(await page.evaluate(() => window.trailnav.state.sim), null, 'End stops the simulation');
@@ -403,7 +406,7 @@ try {
   await page.waitForFunction(() => window.trailnav.map.getPitch() > 50 && Math.abs(window.trailnav.map.getBearing() - 90) < 5, null, { timeout: 5000 });
   ok('navigation view tilts and faces the direction of travel');
 
-  for (const t of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) await setGPS(lerp(START, CORNER, t));
+  for (const t of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.95]) await setGPS(lerp(START, CORNER, t));
   // Give a slow machine a moment to process the last fixes.
   await page.waitForFunction(() => parseInt(document.querySelector('#nav-dist').textContent) < 100, null, { timeout: 5000 }).catch(() => {});
   const dist = await page.textContent('#nav-dist');
@@ -468,6 +471,36 @@ try {
   await page.waitForSelector('.trail-list li');
   assert.match(await page.textContent('.trail-list li'), /Hiking · P1 · 4\.7 mi/);
   ok('switching units to imperial');
+
+  // Test location: a dropped pin becomes your location; the GPS is ignored until "Use GPS".
+  await page.click('#sheet-close');
+  await page.click('.mode-toggle [data-mode="bike"]');
+  const pin = { lat: START.lat + 0.01, lng: START.lng };
+  await page.evaluate((p) => void window.trailnav.map.jumpTo({ center: [p.lng, p.lat], zoom: 16 }), pin);
+  await idle();
+  const at = await page.evaluate((p) => window.trailnav.map.project([p.lng, p.lat]), pin);
+  await page.mouse.click(at.x, at.y);
+  await page.click('#sheet [data-act="me"]');
+  const fixNear = (p) => page.evaluate((q) => {
+    const f = window.trailnav.state.fix;
+    return Math.abs(f.lat - q.lat) < 1e-5 && Math.abs(f.lng - q.lng) < 1e-5;
+  }, p);
+  const pinned = await page.evaluate(() => window.trailnav.state.testLocation);
+  assert.ok(await fixNear(pinned), 'location is the pin');
+  assert.ok(Math.abs(pinned.lat - pin.lat) < 2e-4 && Math.abs(pinned.lng - pin.lng) < 2e-4, JSON.stringify(pinned));
+  assert.ok(await page.isVisible('#test-loc'));
+  await setGPS(START);
+  await setGPS(lerp(START, CORNER, 0.1));
+  assert.ok(await fixNear(pinned), 'GPS is ignored while the test location is set');
+  ok('"Put me here" makes a dropped pin your location; GPS ignored');
+  await page.reload();
+  await page.waitForFunction(() => window.trailnav?.state.fix);
+  assert.ok(await fixNear(pinned), 'test location kept after a restart');
+  assert.ok(await page.isVisible('#test-loc'));
+  await page.click('#test-loc-off');
+  await page.waitForFunction((q) => window.trailnav.state.fix && Math.abs(window.trailnav.state.fix.lat - q.lat) < 1e-5, lerp(START, CORNER, 0.1), { timeout: 5000 });
+  assert.ok(await page.isHidden('#test-loc'));
+  ok('test location kept across a restart; "Use GPS" goes back to the GPS');
 
   assert.deepEqual(errors, [], 'no console errors');
   console.log(`\nAll ${step} e2e checks passed.`);

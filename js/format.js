@@ -17,7 +17,8 @@ export function formatDistance(m, units = 'metric') {
 export function spokenDistance(m, units = 'metric') {
   if (units === 'imperial') {
     const ft = m * 3.28084;
-    if (ft < 1000) return `${Math.round(ft / 50) * 50 || 50} feet`;
+    if (ft < 200) return `${Math.max(10, Math.round(ft / 10) * 10)} feet`;
+    if (ft < 1000) return `${Math.round(ft / 50) * 50} feet`;
     const mi = m / 1609.344;
     if (mi < 0.35) return 'a quarter mile';
     if (mi < 0.75) return 'half a mile';

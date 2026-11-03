@@ -64,6 +64,7 @@ const state = {
   picking: null,        // 'start' | 'end' while waiting for a tap to place that pin
   navKind: null,        // 'directions' (A to B) | 'trail' (along a planned route)
   sim: null,            // simulated ride in progress
+  testLocation: null,   // {lat,lng}: a pin used as your location instead of the GPS, for testing
 };
 
 const $ = (s) => document.querySelector(s);
@@ -73,7 +74,7 @@ const els = {
   toast: $('#toast'),
   banner: $('#nav-banner'), navIcon: $('#nav-icon'), navDist: $('#nav-dist'), navText: $('#nav-text'), navThen: $('#nav-then'),
   footer: $('#nav-footer'), navRemaining: $('#nav-remaining'), navEta: $('#nav-eta'), navSpeed: $('#nav-speed'),
-  offroute: $('#offroute'), recenter: $('#btn-recenter'), mute: $('#btn-mute'),
+  offroute: $('#offroute'), recenter: $('#btn-recenter'), mute: $('#btn-mute'), testLoc: $('#test-loc'),
   planBar: $('#plan-bar'), planText: $('#plan-text'), drawBar: $('#draw-bar'), update: $('#update-ready'),
 };
 
@@ -347,11 +348,37 @@ function flatCamera() {
 function startGPS() {
   if (!('geolocation' in navigator)) { toast('GPS is not available on this device'); return; }
   if (state.watchId != null) return;
-  // Real fixes are ignored while a ride is being simulated.
-  state.watchId = navigator.geolocation.watchPosition((pos) => { if (!state.sim) onFix(pos); }, onGpsError, {
+  state.watchId = navigator.geolocation.watchPosition(gpsFix, onGpsError, {
     enableHighAccuracy: true, maximumAge: 1000, timeout: 20000,
   });
 }
+// Real fixes are ignored while a ride is being simulated or a test location is set
+// (the last one is kept for when the test location is turned off).
+let lastGps = null;
+const gpsFix = (pos) => { lastGps = pos; if (!state.sim && !state.testLocation) onFix(pos); };
+/** A position at `p` in the form the GPS gives, for simulated rides and test locations. */
+const fakeFix = (p, speed = 0) => ({ coords: { latitude: p.lat, longitude: p.lng, accuracy: 5, altitude: null, speed, heading: null }, timestamp: Date.now() });
+
+// For trying the app away from the trail: a pin on the map is your location instead of
+// the GPS, until "Use GPS" is tapped (kept across restarts).
+const TEST_LOCATION_KEY = 'trailnav:test-location';
+function setTestLocation(p, { move = true } = {}) {
+  state.testLocation = p ? { lat: p.lat, lng: p.lng } : null;
+  save(TEST_LOCATION_KEY, state.testLocation || {});
+  els.testLoc.hidden = !p;
+  if (p) {
+    onFix(fakeFix(p));
+    // A jump, not movement: no direction of travel from it.
+    state.heading = null; pointMe(null);
+    if (move) map.easeTo({ center: ll(p), zoom: Math.max(map.getZoom(), 15) });
+  } else {
+    // The real position counts as the first fix, so the map goes to it.
+    state.fix = null; state.heading = null;
+    startGPS();
+    if (lastGps) onFix(lastGps);
+  }
+}
+$('#test-loc-off').addEventListener('click', () => { setTestLocation(null); toast('Using GPS for your location'); });
 
 function onGpsError(err) {
   if (err.code === err.PERMISSION_DENIED) {
@@ -541,6 +568,8 @@ async function showPlace(place, { lookup = false } = {}) {
       <button class="btn primary" data-act="to">Directions</button>
       <button class="btn" data-act="from">Start here</button>
       <button class="btn" data-act="trails">Trails nearby</button>
+      <button class="btn" data-act="me" title="Use this spot as your location instead of the GPS, for testing">Put me here</button>
+      <!-- Last, so it appearing later doesn't move the other buttons. -->
       <button class="btn" data-act="view-trail" hidden>View trail</button>
     </div>`, (root) => {
     root.querySelector('.place-name').textContent = place.name;
@@ -557,6 +586,12 @@ async function showPlace(place, { lookup = false } = {}) {
     root.querySelector('[data-act="trails"]').onclick = () => {
       map.jumpTo({ center: ll(place), zoom: Math.max(map.getZoom(), 12) });
       findTrails();
+    };
+    root.querySelector('[data-act="me"]').onclick = () => {
+      if (destMarker) { destMarker.remove(); destMarker = null; }
+      closeSheet();
+      setTestLocation(place);
+      toast('Your location is now this pin — tap “Use GPS” at the top to go back');
     };
   });
   const mine = sheetSeq;
@@ -1286,7 +1321,6 @@ function deleteCustom(seg) {
 // you join trail #1 at its closest point to your start, and #1 is ridden toward
 // where #2 joins it.
 let planMarkers = [], arrowMarkers = [], planStartMarker = null, planEndMarker = null;
-const SIM_SPEEDUP = 3;
 
 function setView(view) {
   state.view = view;
@@ -1434,7 +1468,7 @@ function renderPlanPanel() {
     <div class="summary plan-summary"></div>
     <div class="row actions">
       <button class="btn primary" id="plan-go" ${r ? '' : 'disabled'}>▶ Start navigation</button>
-      <button class="btn" id="plan-sim" ${r ? '' : 'disabled'} title="Ride the route on screen at ${SIM_SPEEDUP}× speed">Simulate</button>
+      <button class="btn" id="plan-sim" ${r ? '' : 'disabled'} title="Ride the route on screen at trail speed">Simulate</button>
       <button class="btn" id="plan-steps" ${r ? '' : 'disabled'}>Steps</button>
     </div>
     <ul class="steps" hidden></ul>`, (root) => {
@@ -1494,15 +1528,12 @@ function renderPlanPanel() {
 /** Ride the route on screen (for testing away from the trail): fake GPS fixes along it. */
 async function simulateRide(route) {
   stopSim();
-  const speed = (TRAIL_SPEED[settings.mode] || TRAIL_SPEED.bike) * SIM_SPEEDUP;
-  const fixAt = (d) => {
-    const p = pointAlong(route.coords, route.cum, d);
-    return { coords: { latitude: p.lat, longitude: p.lng, accuracy: 5, altitude: null, speed, heading: null }, timestamp: Date.now() };
-  };
+  const speed = TRAIL_SPEED[settings.mode] || TRAIL_SPEED.bike;
+  const fixAt = (d) => fakeFix(pointAlong(route.coords, route.cum, d), speed);
   let along = 0;
   state.sim = { timer: null };
   onFix(fixAt(0));
-  toast(`Simulated ride at ${SIM_SPEEDUP}× speed — tap End to stop`);
+  toast(`Simulated ${settings.mode === 'bike' ? 'ride' : 'hike'} at ${formatSpeed(speed, settings.units)} — tap End to stop`);
   await startNavigation(route, 'trail');
   if (!state.sim) return;
   state.sim.timer = setInterval(() => {
@@ -1516,6 +1547,8 @@ function stopSim() {
   if (!state.sim) return;
   clearInterval(state.sim.timer);
   state.sim = null;
+  // Back where the test location is, ready to try again.
+  if (state.testLocation) setTimeout(() => !state.nav && setTestLocation(state.testLocation, { move: false }));
 }
 
 $('#plan-undo').addEventListener('click', () => {
@@ -1667,6 +1700,7 @@ new ResizeObserver(() => {
 syncModeUI();
 applyLayers();
 startGPS();
+if (load(TEST_LOCATION_KEY).lat != null) setTestLocation(load(TEST_LOCATION_KEY));
 whenReady(loadSegments);
 addCustomSegments();
 drawPlan();
