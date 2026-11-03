@@ -74,7 +74,7 @@ const els = {
   banner: $('#nav-banner'), navIcon: $('#nav-icon'), navDist: $('#nav-dist'), navText: $('#nav-text'), navThen: $('#nav-then'),
   footer: $('#nav-footer'), navRemaining: $('#nav-remaining'), navEta: $('#nav-eta'), navSpeed: $('#nav-speed'),
   offroute: $('#offroute'), recenter: $('#btn-recenter'), mute: $('#btn-mute'),
-  planBar: $('#plan-bar'), planText: $('#plan-text'), drawBar: $('#draw-bar'),
+  planBar: $('#plan-bar'), planText: $('#plan-text'), drawBar: $('#draw-bar'), update: $('#update-ready'),
 };
 
 // ------------------------------------------------------------------ map ----
@@ -1664,6 +1664,15 @@ fetch('data/trail-info.json')
   .then((json) => { defaultInfo = json.trails || {}; customDefaults = json.custom || {}; addCustomSegments(); })
   .catch(() => { /* offline and not cached: own ratings still apply */ });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // When a new version takes over, reload so all of the app comes from that version;
+  // while navigating or drawing, offer it instead of interrupting.
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || window.__reloading) return;
+    if (!state.nav && !draw.on) { window.__reloading = true; location.reload(); return; }
+    els.update.hidden = false;
+  });
+  els.update.addEventListener('click', () => location.reload());
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 // Exposed for debugging / automated tests.

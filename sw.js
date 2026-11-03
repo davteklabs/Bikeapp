@@ -1,6 +1,6 @@
 // Service worker: offline app shell + a bounded cache of map tiles you've viewed,
 // so the map keeps working when signal drops out on the trail.
-const SHELL = 'trailnav-shell-v2';
+const SHELL = 'trailnav-shell-v3';
 const TILES = 'trailnav-tiles-v1';
 const MAX_TILES = 3000;
 
@@ -15,7 +15,8 @@ const SHELL_FILES = [
 // they're viewed by the app-shell handler below and keep working offline.
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  // 'reload': fetch fresh copies, never the browser's possibly older cached ones.
+  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -35,9 +36,11 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
 
   if (url.origin === location.origin) {
-    // App shell: network first (so updates land), cache fallback offline.
+    // App shell: network first (so updates land), cache fallback offline. 'no-cache' makes
+    // the browser check with the server every time; otherwise the server lets it reuse a
+    // file for 10 minutes, and a new page could load with older scripts.
     e.respondWith(
-      fetch(req).then((res) => {
+      fetch(req, { cache: 'no-cache' }).then((res) => {
         if (res.ok) caches.open(SHELL).then((c) => c.put(req, res.clone()));
         return res;
       }).catch(() => caches.match(req, { ignoreSearch: true }))

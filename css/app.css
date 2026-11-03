@@ -51,6 +51,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   padding: 8px 16px; background: var(--bg); color: var(--ink); box-shadow: var(--shadow); font-weight: 600; }
 .pill.warn { background: var(--warn); color: #fff; top: calc(var(--safe-top) + 120px); }
 #btn-recenter { bottom: calc(var(--safe-bottom) + 96px); }
+#update-ready { top: calc(var(--safe-top) + 10px); background: var(--accent); color: var(--accent-ink); z-index: 1004; }
 
 /* ---------- Top bar ---------- */
 #topbar { position: fixed; z-index: 1000; top: calc(var(--safe-top) + 10px); left: 10px; right: 10px;

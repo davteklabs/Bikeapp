@@ -224,7 +224,8 @@ try {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await page.waitForTimeout(500);
   };
-  await touchAt(ridgeB, 800);
+  await idle();
+  await touchAt(ridgeB, 1000);
   assert.deepEqual(await planIds(), ['1002']);
   assert.ok(await page.isHidden('#sheet'), 'touch hold does not also open the trail panel');
   await touchAt(ridgeA, 80);
@@ -328,6 +329,7 @@ try {
   };
   const strokes = () => page.evaluate(() => window.trailnav.draw.strokes);
   const offTrack = (p) => Math.abs(p.lat - track.south) * 111200; // metres from the track line
+  const strokeLen = (s) => s.slice(1).reduce((d, p, i) => d + Math.hypot((p.lat - s[i].lat) * 111200, (p.lng - s[i].lng) * 86800), 0);
   // 8 m north of the track: snapping puts the line on it.
   await drag({ lat: track.south + 0.00007, lng: START.lng + 0.0003 }, { lat: track.south + 0.00007, lng: START.lng + 0.0027 });
   let st = await strokes();
@@ -347,6 +349,21 @@ try {
   await page.click('#draw-undo');
   assert.equal((await strokes()).length, 2);
   ok('eraser cuts the drawing; Undo puts it back');
+  // With a finger, as on a phone: pen tool, one-finger drag.
+  await page.click('#draw-bar [data-tool="pen"]');
+  const fa = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), { lat: track.south + 0.0006, lng: START.lng + 0.0005 });
+  const fb = await page.evaluate((q) => window.trailnav.map.project([q.lng, q.lat]), { lat: track.south + 0.0006, lng: START.lng + 0.0025 });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: fa.x, y: fa.y }] });
+  for (let i = 1; i <= 15; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: fa.x + ((fb.x - fa.x) * i) / 15, y: fa.y }] });
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(300);
+  st = await strokes();
+  assert.equal(st.length, 3, 'a finger drag draws a stroke');
+  assert.ok(strokeLen(st[2]) > 120, `finger stroke ${Math.round(strokeLen(st[2]))} m long`);
+  ok('drawing works with a finger (touch), not just a mouse');
+  await page.click('#draw-undo');
   await snap(page, '1f-draw');
   await page.click('#draw-save');
   await page.fill('#draw-name', 'Canal Path');
